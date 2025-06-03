@@ -1,6 +1,15 @@
 <?php
 
 class awesome_app{
+	public $base_path;
+	public $path;
+	public $safe_id;
+	public $slug;
+	public $name;
+	public $post_id;
+	public $collection;
+	public $settings;
+	public $user;
 	
 	public function exists($slug){
 		$registered_apps=&aw2_library::get_array_ref('apps');
@@ -64,15 +73,16 @@ class awesome_app{
 		
 		//change to module_meta
 		$all_post_meta = aw2_library::get_module_meta($app['collection']['config'],'settings');
-	
-		foreach($all_post_meta as $key=>$meta){
-			
-			//ignore private keys
-			if(strpos($key, '_') === 0 )
-				continue;
-			
-			$app['settings'][$key] = $meta;
+		if (!empty($all_post_meta) && is_array($all_post_meta)) {
+			foreach($all_post_meta as $key=>$meta){
+				
+				//ignore private keys
+				if(strpos($key, '_') === 0 )
+					continue;
+				
+				$app['settings'][$key] = $meta;
 
+			}
 		}
 		\aw2_library::module_run($app['collection']['config'],'settings');
 
@@ -149,7 +159,12 @@ class awesome_app{
 		}
 		
 		$separator = (parse_url($login_url, PHP_URL_QUERY) == NULL) ? '?' : '&';
-		$login_url .= $separator.'redirect_to='.urlencode(SITE_URL.'/'.$query->request);
+		$redirect_to=site_url().'/'.$query->request;
+		if(isset($_SERVER['QUERY_STRING'])){
+			$redirect_to .= '?'.$_SERVER['QUERY_STRING'];
+		}
+			
+		$login_url .= $separator.'redirect_to='.urlencode($redirect_to);
 		
 		if(isset($rights['access']['title'])){
 			$login_url .= '&title='. urlencode($rights['access']['title']);
@@ -168,7 +183,7 @@ class awesome_app{
 		
 		$app=aw2_library::get_array_ref('app');
 		
-		$exists=aw2_library::module_exists_in_collection($app['collection']['config'],'rights');
+		$exists=isset($app['collection']['config'])?aw2_library::module_exists_in_collection($app['collection']['config'],'rights'):false;
 		
 		if($exists){
 			
@@ -184,7 +199,15 @@ class awesome_app{
 			}
 			
 			// must be logged in
-			if(!isset($rights['auth']) && is_user_logged_in() )return;
+			//if(!isset($rights['auth']) && is_user_logged_in() )return;
+			//if(!isset($rights['auth'])) $rights['auth'] = array();
+			
+			if (!isset($rights['auth'])) {
+				$rights['auth'] = array();
+				if (is_user_logged_in()) {
+					return; // Allow access for any logged-in user if no auth rules are set
+				}
+			}
 
 			foreach($rights['auth'] as $auth){
 				if(is_callable(array('awesome_auth', $auth['method']))){
@@ -199,7 +222,12 @@ class awesome_app{
 			}
 			
 			$separator = (parse_url($login_url, PHP_URL_QUERY) == NULL) ? '?' : '&';
-			$login_url .= $separator.'redirect_to='.urlencode(site_url().'/'.$request);
+			$redirect_to=site_url().'/'.$request;
+			if(isset($_SERVER['QUERY_STRING'])){
+				$redirect_to .= '?'.$_SERVER['QUERY_STRING'];
+			}
+			
+			$login_url .= $separator.'redirect_to='.urlencode($redirect_to);
 			
 			if(isset($rights['access']['title'])){
 				$login_url .= '&title='. urlencode($rights['access']['title']);
@@ -219,13 +247,13 @@ class awesome_app{
 			
 			if(!is_array($options) || ('1' != $options['enable_rights'])) return true;
 			
-			if('1' == $options['enable_vsession']){
+			if(isset($options['enable_vsession']) && '1' == $options['enable_vsession']){
 				$vsession_key = $options['vsession_key'] ? $options['vsession_key'] : 'email';
 				$vsession = awesome_auth::vsession2($vsession_key);
 				if($vsession) return;
 			}
 			
-			if('1' == $options['enable_single_access']){
+			if(isset($options['enable_single_access']) && '1' == $options['enable_single_access']){
 				$auth_for_single = array();
 				$auth_for_single['all_roles'] = $options['single_access_roles'];
 				$has_single_access = awesome_auth::single_access($auth_for_single);
@@ -241,7 +269,12 @@ class awesome_app{
 			}
 			
 			$separator = (parse_url($login_url, PHP_URL_QUERY) == NULL) ? '?' : '&';
-			$login_url .= $separator.'redirect_to='.urlencode(site_url().'/'.$request);
+			$redirect_to=site_url().'/'.$request;
+			if(isset($_SERVER['QUERY_STRING'])){
+				$redirect_to .= '?'.$_SERVER['QUERY_STRING'];
+			}
+			
+			$login_url .= $separator.'redirect_to='.urlencode($redirect_to);
 			
 			header("Cache-Control: no-cache, no-store, must-revalidate"); // HTTP 1.1.
 			aw2_library::redirect($login_url);

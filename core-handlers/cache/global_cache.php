@@ -132,6 +132,10 @@ function flush($atts,$content=null,$shortcode){
 	extract(\aw2_library::shortcode_atts( array(
 	'db'=>REDIS_DATABASE_GLOBAL_CACHE
 	), $atts) );	
+	if(empty($db))
+		throw new \InvalidArgumentException('global_cache.flush: db is empty must be an integer.');
+		
+		$db=intval($db);
 		$redis = \aw2_library::redis_connect($db);
 	$redis->flushdb() ;
 }
@@ -174,10 +178,6 @@ function run($atts,$content=null,$shortcode){
 	}
 	else{
 		$return_value=\aw2_library::parse_shortcode($content) ;
-		if($main && !(current_user_can('develop_for_awesomeui') && isset($_COOKIE['dev_no_cache']))){
-			$redis->set($main, $return_value);
-			$redis->expire($main, $ttl*60);
-		}
 	}
 		
 	$return_value=\aw2_library::post_actions('all',$return_value,$atts);

@@ -7,7 +7,7 @@ namespace aw2\util;
 function otp($atts,$content=null,$shortcode){
 	if(\aw2_library::pre_actions('all',$atts,$content,$shortcode)==false)return;
 	
-	$return_value=mt_rand(100000,999999);
+	$return_value=\mt_rand(100000,999999);
 	$return_value=\aw2_library::post_actions('all',$return_value,$atts);
 	return $return_value;
 }
@@ -95,7 +95,7 @@ function nonce($atts,$content=null,$shortcode){
 	
 	if(!$main)return 'Main must be set';
 	
-	$return_value = wp_create_nonce($main);
+	$return_value = \wp_create_nonce($main);
 	
 	$return_value=\aw2_library::post_actions('all',$return_value,$atts);
 	
@@ -115,9 +115,9 @@ function qs_parse($atts,$content=null,$shortcode){
 	$i = 0;
 	$return_value=array();
 	foreach ($qs as $value){
-		$pos = strpos($value, '$$');
+		$pos = \strpos($value, '$$');
 		if ($pos !== false) {
-			$arr=explode('$$',$value);
+			$arr=\explode('$$',$value);
 			$return_value[$arr[0]]=\aw2\clean\safe(['main'=>$arr[1]]);
 		}else{
 			$return_value[$i]=\aw2\clean\safe(['main'=>$value]);
@@ -130,6 +130,20 @@ function qs_parse($atts,$content=null,$shortcode){
 	return $return_value;
 }
 
+\aw2_library::add_service('util.constant','Returns an associative array with the names of all the constants and their values',['namespace'=>__NAMESPACE__]);
+function constant($atts,$content=null,$shortcode){
+	if(\aw2_library::pre_actions('all',$atts,$content,$shortcode)==false)return;
+	extract(\aw2_library::shortcode_atts( array('constant_key'=>'all'), $atts) );
+	
+	if($constant_key=='all'){
+		$return_value=\get_defined_constants();  
+	}else{
+		$return_value=\constant($constant_key);  
+	}
+
+	$return_value=\aw2_library::post_actions('all',$return_value,$atts);
+	return $return_value;
+}
 
 /*
 \aw2_library::add_shortcode('search','new_ticket', 'search_new_ticket');

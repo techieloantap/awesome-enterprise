@@ -3,9 +3,11 @@
 class aw2_error_log{
 	
 	static function awesome_exception($location,$exception=null){
-		if(!WP_DEBUG){
+		if(!defined('DEVELOP_FOR_AWESOMEUI') || !DEVELOP_FOR_AWESOMEUI){
 			$error_msg ='Something is wrong (000), enable debug to see details.';
-			return $error_msg;
+			
+			if(!LOG_EXCEPTIONS)
+				return $error_msg;
 		}
 		
 		$atts=array();
@@ -14,6 +16,7 @@ class aw2_error_log{
 		
 		$atts['location']= $location;
 		$atts['post_type']= aw2_library::get('env.@sc_exec.collection.post_type');
+		$atts['connection']= aw2_library::get('env.@sc_exec.collection.connection');
 		$atts['source']= aw2_library::get('env.@sc_exec.collection.source');
 		$atts['module']= aw2_library::get('env.@sc_exec.module');
 		$atts['app_name']= aw2_library::get('env.app.name');
@@ -44,10 +47,12 @@ class aw2_error_log{
 					$post_type=$entry['collection']['source'];
 				
 				$slug= isset($entry['slug'])?$entry['slug']:'';
+				$obj_id= isset($entry['obj_id'])?$entry['obj_id']:'';
+				$obj_type= isset($entry['obj_type'])?$entry['obj_type']:'';
 				
 				$call_stack[]=array(
-					'obj_id'=>$entry['obj_id'],
-					'obj_type'=>$entry['obj_type'],
+					'obj_id'=>$obj_id,
+					'obj_type'=>$obj_type,
 					'slug'=>$slug,
 					'post_type'=>$post_type
 				);
@@ -72,7 +77,7 @@ class aw2_error_log{
 		}
 		
 		
-		
+		$flag=true;
 		if(!is_null($exception)){
 			$atts['exception_type'] = get_class($exception);
 			$atts['errno'] = method_exists($exception,'getCode')? $exception->getCode() : '';
@@ -83,8 +88,31 @@ class aw2_error_log{
 			
 		}
 		
-		$error_id = self::save($atts);
-		$error_msg ='Something is wrong ('.$error_id.')';	
+		$error_id='Not Logged';
+
+		if(LOG_EXCEPTIONS)$error_id = self::save($atts);
+		
+		if($atts['exception_type']==='E_USER_NOTICE'){
+			$flag=false;
+		}
+		if(!isset($error_msg))$error_msg ='Developer:Something is wrong ('.$error_id.')';	
+
+		if(\aw2_library::is_live_debug()){
+			$live_debug_event=array();
+			$live_debug_event['flow']='exception';
+
+			$live_debug_event['action']='exception.error';
+			$live_debug_event['error']='yes';
+			$live_debug_event['error_type']='exception_error';
+			$live_debug_event['atts']=$atts;
+			$live_debug_event['exception_type']=$atts['exception_type'];
+			
+			
+			\aw2\live_debug\publish_event(['event'=>$live_debug_event]);
+
+		}
+		
+		
 		
 		$atts['error_db_id'] =$error_id;
 		self::log_error($atts);
@@ -107,6 +135,9 @@ class aw2_error_log{
 		if(strpos($err_file, 'wp-admin/includes/file.php') !== false) return;
 		if(strpos($err_file, 'wp-includes/capabilities.php') !== false) return;
 
+		if((strpos($err_msg, 'open_basedir') !== false) && (strpos($err_file, 'matthiasmullie/minify/src/Minify.php') !== false)) return;
+
+
 		$sc_exec=&aw2_library::get_array_ref('@sc_exec');
 		$sc_exec['err_msg']=$err_msg;
 		$sc_exec['err_file']=$err_file;
@@ -119,6 +150,7 @@ class aw2_error_log{
 	}
 
 	static function log_datatype_mismatch($arr){
+		return;
 		if(!WP_DEBUG){
 			return;
 		}
@@ -220,11 +252,11 @@ class aw2_error_log{
 		set @pos='".$position."';
 		set @template='".$template."';
 		
-		SELECT @id:=ID FROM ".AWESOME_LOG_DB.".datatype_mismatch WHERE post_type=@post_type and source=@source and module_slug=@module and position=@pos and template_name=@template ;
+		SELECT @id:=ID FROM `".AWESOME_LOG_DB."`.datatype_mismatch WHERE post_type=@post_type and source=@source and module_slug=@module and position=@pos and template_name=@template ;
 	
 		IF @id is null THEN
 			
-			INSERT INTO ".AWESOME_LOG_DB.".`datatype_mismatch` (`app_name`,`module_slug`,`source`,`post_type`,`template_name`,`sc`,`position`,`request_url`,`conditional`,`php7_result`,`lhs_value`,`lhs_datatype`,`rhs_value`,`rhs_datatype`,`invalid_lhs_dt`,`invalid_rhs_dt`,`invalid_match`,`link`) VALUES ( '".$app_name."','".$module."','".$source."','".$post_type."','".$template."','".$sc."','".$position."','".$url."','".$conditional."','".$php7_result."','".$lhs."','".$lhs_datatype."','".$rhs."','".$rhs_datatype."','".$invalid_lhs_dt."','".$invalid_rhs_dt."','".$invalid_match."','".$link."');
+			INSERT INTO `".AWESOME_LOG_DB."`.`datatype_mismatch` (`app_name`,`module_slug`,`source`,`post_type`,`template_name`,`sc`,`position`,`request_url`,`conditional`,`php7_result`,`lhs_value`,`lhs_datatype`,`rhs_value`,`rhs_datatype`,`invalid_lhs_dt`,`invalid_rhs_dt`,`invalid_match`,`link`) VALUES ( '".$app_name."','".$module."','".$source."','".$post_type."','".$template."','".$sc."','".$position."','".$url."','".$conditional."','".$php7_result."','".$lhs."','".$lhs_datatype."','".$rhs."','".$rhs_datatype."','".$invalid_lhs_dt."','".$invalid_rhs_dt."','".$invalid_match."','".$link."');
 			
 		END IF;
 			
@@ -300,7 +332,7 @@ class aw2_error_log{
 				
 		if(!defined('AWESOME_LOG_DB'))
 			define('AWESOME_LOG_DB', DB_NAME);
-		
+	/** 	
 		$sql = "
 		start TRANSACTION;
 		set @post_type='".$post_type."';
@@ -311,13 +343,13 @@ class aw2_error_log{
 		set @errfile='".$errfile."';
 		set @errline='".$errline."';
 	
-		SELECT @id:=ID FROM ".AWESOME_LOG_DB.".awesome_exceptions WHERE post_type=@post_type and source=@source and module=@module and position=@pos and errno=@errno and errfile=@errfile and errline=@errline;
+		SELECT @id:=ID FROM `".AWESOME_LOG_DB."`.`awesome_exceptions` WHERE post_type=@post_type and source=@source and module=@module and position=@pos and errno=@errno and errfile=@errfile and errline=@errline;
 	
 		IF @id is not null THEN
-			UPDATE ".AWESOME_LOG_DB.".awesome_exceptions SET no_of_times = no_of_times + 1,  status ='active' WHERE ID=@id;
+			UPDATE `".AWESOME_LOG_DB."`.`awesome_exceptions` SET no_of_times = no_of_times + 1,  status ='active' WHERE ID=@id;
 			SELECT @id;
 		ELSE
-			INSERT INTO ".AWESOME_LOG_DB.".`awesome_exceptions` (`exception_type`, `post_type`, `source`, `module`, `location`, `app_name`, `sc`, `position`, `link`,`user`, `header_data`,`request_data`,`sql_query`,`request_url`,`message`, `errno`, `errfile`, `errline`, `call_stack`,`trace`, `no_of_times`, `status`) VALUES ( '".$exception_type."', '".$post_type."', '".$source."', '".$module."', '".$location."', '".$app_name."', '".$sc."', '".$position."', '".$link."','".$user."', ' ".$header_value."','".$request."','".$sql_query."','".$url."','".$message."', '".$errno."', '".$errfile."', '".$errline."', '".$call_stack."','".$trace."', '1', '".$status."');
+			INSERT INTO `".AWESOME_LOG_DB."`.`awesome_exceptions` (`exception_type`, `post_type`, `source`, `module`, `location`, `app_name`, `sc`, `position`, `link`,`user`, `header_data`,`request_data`,`sql_query`,`request_url`,`message`, `errno`, `errfile`, `errline`, `call_stack`,`trace`, `no_of_times`, `status`) VALUES ( '".$exception_type."', '".$post_type."', '".$source."', '".$module."', '".$location."', '".$app_name."', '".$sc."', '".$position."', '".$link."','".$user."', ' ".$header_value."','".$request."','".$sql_query."','".$url."','".$message."', '".$errno."', '".$errfile."', '".$errline."', '".$call_stack."','".$trace."', '1', '".$status."');
 		
 			SELECT LAST_INSERT_ID();
 		END IF;
@@ -325,13 +357,77 @@ class aw2_error_log{
 		
 		COMMIT;
 		";
-
+*/
 		//echo $sql;
+
+		$sql ="
+		START TRANSACTION;
+		set @post_type='".$post_type."';
+		set @source='".$source."';
+		set @module='".$module."';
+		set @pos='".$position."';
+		set @errno='".$errno."';
+		set @errfile='".$errfile."';
+		set @errline='".$errline."';
+
+		INSERT INTO `".AWESOME_LOG_DB."`.`awesome_exceptions`
+		(`exception_type`, `post_type`, `source`, `module`, `location`, `app_name`, `sc`, `position`, `link`, `user`, `header_data`, `request_data`, `sql_query`, `request_url`, `message`, `errno`, `errfile`, `errline`, `call_stack`, `trace`, `no_of_times`, `status`) SELECT 
+		'".$exception_type."' exception_type,
+		  '".$post_type."' post_type,
+		  '".$source."' source,
+		  '".$module."' module,
+		  '".$location."' location, 
+		  '".$app_name."' app_name, 
+		  '".$sc."' sc, 
+		  '".$position."' position, 
+		  '".$link."' link,
+		  '".$user."' user, 
+		  '".$header_value."' header_data,
+		  '".$request."' request_data,
+		  '".$sql_query."' sql_query,
+		  '".$url."' request_url,
+		  '".$message."' message, 
+		  '".$errno."' errno, 
+		  '".$errfile."' errfile, 
+		  '".$errline."' errline, 
+		  '".$call_stack."' call_stack,
+		  '".$trace."' trace,
+		   '0' no_of_times, 
+		   'active' status
+	FROM DUAL
+	WHERE NOT EXISTS (
+	  SELECT 1
+	  FROM `".AWESOME_LOG_DB."`.`awesome_exceptions`
+	  WHERE 
+		 post_type = @post_type
+	  AND source = @source
+	  AND module = @module
+	  AND position = @pos
+	  AND errno = @errno
+	  AND errfile = @errfile
+	  AND errline = @errline
+	  LIMIT 1
+	);
+
+		SELECT @id:=ID FROM `".AWESOME_LOG_DB."`.`awesome_exceptions` WHERE post_type = @post_type AND source = @source AND module = @module AND position = @pos AND errno = @errno AND errfile = @errfile AND errline = @errline LIMIT 1;
+ 
+
+		UPDATE `".AWESOME_LOG_DB."`.`awesome_exceptions`
+		SET no_of_times = no_of_times + 1
+		WHERE ID = @id;
+
+		SELECT @id;
+		COMMIT;
+		";
 		
 		$obj = \aw2_library::$mysqli->multi_query($sql);
 		
 	
-		$result = $obj->fetchAll("col");
+		try {
+			$result = $obj->fetchAll("col");
+		} catch (Exception $e) {} 
+		//this is added to handle the situation where for some reason above code fails and $result is not set.
+
 		$last_insert_id='';
 
 		if(is_array($result) &&!empty($result))

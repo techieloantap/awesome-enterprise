@@ -9,21 +9,28 @@ class aw2_template{
 	public $code=AW2_ERROR;
 	public $name=AW2_ERROR;
 	
-}	
+} 	
 
 class aw2_error{
 	public $status='error';
 	public $message='';
 	public $error_code='';
 }
- 
+  
 
 class aw2_library{
 
 static $conn=null;
 static $stack=array();
+static $funcstack=array();
 static $redis_conn=null;
 static $mysqli=null;
+
+
+static function reset_env($new_env){
+	self::$stack=null;
+	self::$stack=$new_env;
+}
 
 
 static function load_handlers_from_path($handlers_path,...$paths){
@@ -62,6 +69,17 @@ static function load_all_extra_handlers(){
 }
 
 private static $hasArray = false;
+
+
+static function get_service_params($atts){
+	//php8OK
+	$service=array('name'=>null,'atts'=>array());
+	foreach ($atts as $key => $value) {
+		if ($key === 's.@') $service['name'] = $value;
+		elseif (strpos($key, 's.') === 0) $service['atts'][substr($key, 2)] = $value;
+	}
+	return $service;
+}
 
 static function esc_sql($value){
 	if(!self::$mysqli)self::$mysqli = self::new_mysqli();
@@ -417,6 +435,27 @@ static function new_mysqli(){
 	return $mysqli;
 }
 
+static function get_default_db_conn(){
+	 //check for mysqli handler
+	 $mysqli_handler = self::get('handlers.mysqli');
+	 if(empty($mysqli_handler))throw new Exception('db connection mysqli is not registered');
+	 if(!isset($mysqli_handler['conn_path'])) throw new Exception('db connection mysqli does not have conn_path');
+
+	//get the mysql connection
+	$mysqli = self::get($mysqli_handler['conn_path']);
+	//set the db
+	//$mysqli->select_db($mysqli_handler['db_name']);
+	$db_connection=$mysqli_handler['db_connection'];
+	//$result=$mysqli->select_db($db_name);
+	$db_conections = DB_CONNECTIONS;
+
+	$result=$mysqli->change_user($db_conections[$db_connection]['user'], $db_conections[$db_connection]['password'], $db_name);
+
+	//return the obj
+	return $mysqli;
+	
+}
+
 static function cleanup(){
 	if(self::$mysqli) {
 		self::$mysqli->close();
@@ -534,304 +573,169 @@ static function unescape_invalid_shortcodes( $content ) {
  
     return $content;
 }
+ 
+static function bytecode_shortcode($content) {
+
+	$content = preg_replace("/\/\/\*.*\*\/\//sU", "", $content);
+
+	$re = '/\[(\[?)((?:[a-zA-Z0-9\-_@])+\.(?:[a-zA-Z0-9\-._@])+)(?![\w-])([^\]\/]*(?:\/(?!\])[^\]\/]*)*?)(?:(\/)\]|\](?:([^\[]*+(?:\[(?!\/\2\])[^\[]*+)*+)\[\/\2\])?)(\]?)|[^\[]+|(.+?)/ms';
+
+	preg_match_all($re, $content, $matches, PREG_SET_ORDER|PREG_OFFSET_CAPTURE, 0);
+
+		$now = DateTime::createFromFormat('U.u', microtime(true));
+		$val=$now->format("m-d-Y H:i:s.u");
+		echo $val . 'match-start<br>';
+
+	// Print the entire match result
+	
+	$out='';
+	foreach($matches as $m){
+		if(count($m)===1)
+			$out.=$m[0][0];
+		else{
+			$now = DateTime::createFromFormat('U.u', microtime(true));
+			$val=$now->format("m-d-Y H:i:s.u");
+			echo $val . 'every loop' . count($m) . '<br>';			
+			//\util::var_dump($m);
+			$out.=self::shortcode_tag($m);
+			
+		}
+		
+	}
+		$now = DateTime::createFromFormat('U.u', microtime(true));
+		$val=$now->format("m-d-Y H:i:s.u");
+		echo $val . 'match-end' . count($m) . '<br>';
+	
+
+	return $out;	
+}
+
+
+static function parse_single( $content) {
+	//php8OK	
+	if(self::is_live_debug()){
+		
+		$live_debug_event=array();
+		$live_debug_event['flow']='parser';
+		$live_debug_event['action']='parser.single.called';
+		$live_debug_event['content']=substr(print_r($content, true),0,500);
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#F5EDDC']);
+	}
+
+	
+	if(is_null($content)) return $content;
+	if ( false === strpos( $content, '[' ) )return $content;
+	
+	$pattern = self::get_shortcode_regex();
+
+	
+	$pattern =str_replace("_handler","(?:[a-zA-Z0-9\-._@])+",$pattern);	
+
+	$flag=preg_match("/$pattern/s", $content, $m, PREG_OFFSET_CAPTURE);
+
+
+	if($flag===0)return $content;
+
+
+	//$content = preg_replace_callback( "/$pattern/s", 'self::shortcode_tag', $content,-1, $count ,PREG_OFFSET_CAPTURE );
+
+	$content=self::single_tag( $m );
+	
+
+	if(self::is_live_debug()){
+		$live_debug_event['action']='parser.single.done';
+		$live_debug_event['result']=substr(print_r($content, true),0,5000);
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#F5EDDC']);
+	}
+
+	return  $content;
+}
+
+
+static function single_tag( $m ) {
+	//php8OK	
+	global $shortcode_tags;
+
+	$tag = $m[2][0];
+	$attr = self::shortcode_parse_atts( $m[3][0] );
+
+
+	if ( isset( $m[5][0] ) )
+		$content=$m[5][0];	
+	else
+		$content=null;
+		
+	$inputs=array();
+	$inputs['tags']= $tag;
+	$inputs['atts'] = $attr;
+
+	if ( isset( $m[5][0] ) )
+		$inputs['content']=$m[5][0];	
+
+
+	$reply=self::process_handler($inputs);
+ 
+	if($reply==='#not_awesome_sc#'){
+		if(isset($shortcode_tags[$tag])){
+			return $m[1][0] . call_user_func( $shortcode_tags[$tag], $attr, $content, $tag ) . $m[6][0];
+		}
+
+		return $m[0][0];
+	}	
+	return $reply;
+}
+
+
+
 static function parse_shortcode( $content, $ignore_html = false,$sc_exec_restore='no') {
 	//php8OK	
+
+	if(self::is_live_debug()){
+		
+		$live_debug_event=array();
+		$live_debug_event['flow']='parser';
+		$live_debug_event['action']='parser.called';
+		$live_debug_event['content']=substr(print_r($content, true),0,100);
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#F5EDDC']);
+	}
+
+	
 	if(is_null($content)) return $content;
 	$content = preg_replace("/\/\/\*.*\*\/\//sU", "", $content);
 	if ( false === strpos( $content, '[' ) )return $content;
 
 	
 	$pattern = self::get_shortcode_regex();
+	
+	$pattern =str_replace("_handler","(?:[a-zA-Z0-9\-._@\^])+",$pattern);	
+	if($sc_exec_restore==='yes')$restore=self::sc_exec_setup_pos();	
+	$count=0;
+
+
+
+	$content = preg_replace_callback( "/$pattern/s", 'self::shortcode_tag', $content,-1, $count ,PREG_OFFSET_CAPTURE );
 
 
 	
-	$pattern =str_replace("_handler","(?:[a-zA-Z0-9\-._@])+",$pattern);	
-
-	if($sc_exec_restore==='yes')$restore=self::sc_exec_setup_pos();	
-	$count=0;
-	$content = preg_replace_callback( "/$pattern/s", 'self::shortcode_tag', $content,-1, $count ,PREG_OFFSET_CAPTURE );
 	if($sc_exec_restore==='yes')self::sc_exec_restore($restore);	
 	//$content = preg_replace_callback( "/$pattern/s", 'self::shortcode_tag', $content );
 		
-	
-	
-
-	
 
 	if(isset(self::$stack['_return']))return '';
 	
 	// Always restore square braces so we don't break things like <!--[if IE ]>
 	$content = self::unescape_invalid_shortcodes( $content );
 
-	return (!is_null($content)) ? trim($content) :'';
+	if(self::is_live_debug()){
+		$live_debug_event['action']='parser.done';
+		$live_debug_event['result']=substr(print_r($content, true),0,100);
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#F5EDDC']);
+	}
+
+
+	return  self::safe_trim($content);
 }
 
-
-static function service_helper_old($tag,$attr,$content){
-	//php8OK	
-	
-		$tag=str_replace('service:','',$tag);
-	
-	$pieces=(!is_null($tag)) ? explode('.',$tag) : '';
-	$service=null;
-	
-	if(count($pieces)>=2){
-		$sc=array();
-		$sc['tags']=$pieces;
-		
-		//awesome handles this block
-		$handlers=self::get_array_ref('handlers');
-
-		$next_tag=$pieces[0];
-		
-		if(isset($handlers[$next_tag]) ){
-			$service=array_shift($pieces);
-			$sc['handler']=$handlers[$service];
-			$next_tag=$pieces[0];
-			
-			if(isset($sc['handler'][$next_tag])){
-				$service=array_shift($pieces);
-				$sc['handler']=$sc['handler'][$service];
-				$next_tag=null;
-				if(isset($pieces[0]))$next_tag=$pieces[0];	
-			}	
-		}
-		$sc['tags_left']=$pieces;
-	}
-
-	if(!$service)return 'Service Not Found';
-	
-	if(!empty($attr))self::pre_action_parse($attr);
-		
-	$pre_compiler_check=array('c','and','or','m','m2','o','o2');
-	$pre=array();
-	$pre['primary']=array();
-		
-	if(!empty($attr)){
-		foreach ($attr as $key => $value) {
-			
-			$pre_key = (!is_null($key)) ?  explode('.',$key) : '';
-			
-			if(count($pre_key)>1 && in_array($pre_key[0],$pre_compiler_check)){
-				$pre[$pre_key[0]][$pre_key[1]] = $value;
-			}else{
-				$pre['primary'][$key] = $value;
-			}
-		}
-	}	
-				
-	$check_cond = true ;
-	if(isset($pre['c'])){
-		//loop and call chain which will update all atts
-		foreach ($pre['c'] as $key => $value) {
-			if(isset($handlers['c'][$key])){
-				if (isset($handlers['c'][$key]['func']))
-					$c_fn_name=$handlers['c'][$key]['namespace'] . '\\' . $handlers['c'][$key]['func'];
-				else
-					$c_fn_name=$handlers['c'][$key]['namespace'] . '\\' . $key;
-				
-				$check_cond=call_user_func($c_fn_name, $pre['c'], '', '' );
-				if($check_cond === false && !isset($pre['or']))	return '';
-				break;
-			}
-		}
-	}
-	
-	if(isset($pre['and'])){
-		foreach ($pre['and'] as $key => $value) {
-			if(isset($handlers['c'][$key])){
-				if (isset($handlers['c'][$key]['func']))
-					$and_fn_name=$handlers['c'][$key]['namespace'] . '\\' . $handlers['c'][$key]['func'];
-				else
-					$and_fn_name=$handlers['c'][$key]['namespace'] . '\\' . $key;
-				
-				$check_and=call_user_func($and_fn_name, $pre['and'], '', '' );
-				if($check_and === false) return '';
-				break;
-			}
-		}
-	}
-	
-	if(isset($pre['or']) && ($check_cond === false)){
-		foreach ($pre['or'] as $key => $value) {
-			if(isset($handlers['c'][$key])){
-				if (isset($handlers['c'][$key]['func']))
-					$or_fn_name=$handlers['c'][$key]['namespace'] . '\\' . $handlers['c'][$key]['func'];
-				else
-					$or_fn_name=$handlers['c'][$key]['namespace'] . '\\' . $key;
-				
-				$check_or=call_user_func($or_fn_name, $pre['or'], '', '' );
-				if($check_or === false) return '';
-				break;
-			}
-		}
-	}
-		
-	$flag = false;
-		
-		
-	$handler=$sc['handler'];
-
-	if(isset($handler['type'])){
-		$service_type = $handler['type'];
-
-		$fn_name=null;
-		switch($service_type){
-			
-			case 'content_type_def':
-				$sc['content_type']=$sc['handler'];	
-				$sc['handler']=$handlers['content_type_def'];					
-				$service='content_type_def';
-				
-				if(isset($sc['handler'][$next_tag])){
-					$service=$next_tag;
-					$sc['handler']=$sc['handler'][$next_tag];
-					$next_tag=null;
-				}	
-				$handler = $sc['handler'];
-				
-				if(isset($handler['func']))
-					$fn_name=$handler['namespace'] . '\\' . $handler['func'];
-				else{
-						$fn_name=$handler['namespace'] . '\\' . $service;					
-				}
-				if (!is_callable($fn_name) && $next_tag)$fn_name=$handler['namespace'] . '\\'  . $next_tag;
-				if (!is_callable($fn_name))$fn_name=$handler['namespace'] . '\\'  . 'unhandled';
-				if (!is_callable($fn_name))$fn_name=null;
-				break;
-				
-			case 'collection':
-				$sc['collection']=$sc['handler'];	
-				$sc['handler']=$handlers['collection'];
-				$service='collection';
-				
-				if(isset($sc['handler'][$next_tag])){
-					$service=$next_tag;
-					$sc['handler']=$sc['handler'][$next_tag];
-					$next_tag=null;
-				}	
-				$handler = $sc['handler'];		
-	
-				if(isset($handler['func']))
-					$fn_name=$handler['namespace'] . '\\' . $handler['func'];
-				else{
-						$fn_name=$handler['namespace'] . '\\' . $service;					
-				}
-				if (!is_callable($fn_name) && $next_tag)$fn_name=$handler['namespace'] . '\\'  . $next_tag;
-				if (!is_callable($fn_name))$fn_name=$handler['namespace'] . '\\'  . 'unhandled';
-				if (!is_callable($fn_name))$fn_name=null;
-				break;
-			case 'namespace':
-				if(isset($handler['func']))
-					$fn_name=$handler['namespace'] . '\\' . $handler['func'];
-				else{
-						$fn_name=$handler['namespace'] . '\\' . $service;
-				}
-				if (!is_callable($fn_name) && $next_tag)$fn_name=$handler['namespace'] . '\\'  . $next_tag;
-				if (!is_callable($fn_name))$fn_name=$handler['namespace'] . '\\'  . 'unhandled';
-				if (!is_callable($fn_name))$fn_name=null;
-				break;
-
-			case 'awesome':
-				if(isset($handler['func']))
-					$fn_name=$handler['func'];
-				else{
-						$fn_name='aw2_' . $service;					
-				}
-				if (!is_callable($fn_name) && $next_tag)$fn_name='aw2_' .$service . '_'  . $next_tag;
-				if (!is_callable($fn_name))$fn_name='aw2_' .$service . '_'  . 'unhandled';
-				if (!is_callable($fn_name))$fn_name=null;
-				break;
-				
-			case 'env_key':
-				$pre['primary']['_prefix']=$handler['env_key'];
-				$sc['handler']=$handlers['env'];
-				$service='env';
-				
-				if(isset($sc['handler'][$next_tag])){
-					$service=$next_tag;
-					$sc['handler']=$sc['handler'][$next_tag];
-					$next_tag=null;
-				}	
-				$handler = $sc['handler'];		
-	
-				if(isset($handler['func']))
-					$fn_name=$handler['namespace'] . '\\' . $handler['func'];
-				else{
-						$fn_name=$handler['namespace'] . '\\' . $service;					
-				}
-				if (!is_callable($fn_name) && $next_tag)$fn_name=$handler['namespace'] . '\\'  . $next_tag;
-				if (!is_callable($fn_name))$fn_name=$handler['namespace'] . '\\'  . 'unhandled';
-				if (!is_callable($fn_name))$fn_name=null;
-				break;
-		}
-		
-		if($fn_name){
-			$flag = true;
-			$reply = call_user_func($fn_name, $pre['primary'], $content, $sc );
-		}
-	}
-
-
-	if ($flag===true){
-		if(isset($pre['m'])){
-			//$reply=self::modify_output($reply,$pre['m']);
-			foreach ($pre['m'] as $key => $value) {
-				if(isset($handlers['m'][$key])){
-					if (isset($handlers['m'][$key]['func']))
-						$m_fn_name=$handlers['m'][$key]['namespace'] . '\\' . $handlers['m'][$key]['func'];
-					else
-						$m_fn_name=$handlers['m'][$key]['namespace'] . '\\' . $key;
-					$reply=call_user_func($m_fn_name, $reply, $pre['m'] );
-				}
-			}
-		}
-		
-		if(isset($pre['m2'])){
-			foreach ($pre['m2'] as $key => $value) {
-				if(isset($handlers['m'][$key])){
-					if (isset($handlers['m'][$key]['func']))
-						$m_fn_name=$handlers['m'][$key]['namespace'] . '\\' . $handlers['m'][$key]['func'];
-					else
-						$m_fn_name=$handlers['m'][$key]['namespace'] . '\\' . $key;
-					$reply=call_user_func($m_fn_name, $reply, $pre['m2'] );
-				}
-			}
-		}
-		
-		if(isset($pre['o'])){
-			//$reply=self::redirect_output($reply,$pre['o']);
-			foreach ($pre['o'] as $key => $value) {
-				if(isset($handlers['o'][$key])){
-					if (isset($handlers['o'][$key]['func']))
-						$o_fn_name=$handlers['o'][$key]['namespace'] . '\\' . $handlers['o'][$key]['func'];
-					else
-						$o_fn_name=$handlers['o'][$key]['namespace'] . '\\' . $key;
-					$reply=call_user_func($o_fn_name, $reply, $pre['o'] );
-				}
-			}
-		}
-		
-		if(isset($pre['o2'])){
-			//$reply=self::redirect_output($reply,$pre['o']);
-			foreach ($pre['o2'] as $key => $value) {
-				if(isset($handlers['o'][$key])){
-					if (isset($handlers['o'][$key]['func']))
-						$o_fn_name=$handlers['o'][$key]['namespace'] . '\\' . $handlers['o'][$key]['func'];
-					else
-						$o_fn_name=$handlers['o'][$key]['namespace'] . '\\' . $key;
-					$reply=call_user_func($o_fn_name, $reply, $pre['o2'] );
-				}
-			}
-		}
-		
-
-		return $reply;
-		}
-	
-
-	return '';	
-}
 
 static function service_helper($tags,$atts=array(),$content=null){
 	//php8OK	
@@ -902,7 +806,7 @@ static function service_run($tag,$attr,$content,$default='service'){
 			return (int) $tag;
 			break;		
 		case 'comma':
-			return (!is_null($tag)) ? explode(',',(string)$tag) : '';
+			return self::safe_explode(',',(string)$tag);
 			break;
 			
 		case 'bool':
@@ -920,347 +824,6 @@ static function service_run($tag,$attr,$content,$default='service'){
 	
 } 
 
-
-static function shortcode_tag_old_jan_9( $m ) {
-	//php8OK	
-	
-		
-	global $shortcode_tags;
-	if(isset(self::$stack['_return']))return '';
-
-	$sc_exec=&self::get_array_ref('@sc_exec');
-	$sc_exec['sc']=$m[0][0];
-	$sc_exec['pos']=$m[0][1];
-	$sc_exec['content_pos']=$m[5][1];
-
-	if(isset($sc_exec['start_pos']) && $sc_exec['start_pos']){
-		$sc_exec['pos']=$sc_exec['pos'] + $sc_exec['start_pos'];
-		if($sc_exec['content_pos']!==-1)$sc_exec['content_pos']=$sc_exec['content_pos'] +  $sc_exec['start_pos'];
-	}
-	$sc_exec['match']=$m;
-	#generate link
-	$sc_exec['link']=SITE_URL . '/d?module=' . ((isset($sc_exec['module'])) ? $sc_exec['module'] : '' ) .  '&post_type=' . ((isset($sc_exec['collection']['post_type'])) ? $sc_exec['collection']['post_type'] : '')  . '&pos=' . $sc_exec['pos'] ;
-	
-	
-	// allow [[foo]] syntax for escaping a tag
-	if ( $m[1][0] === '[' && $m[6][0] === ']' ) {
-		return substr($m[0], 1, -1);
-	}
-
-	$tag = $m[2][0];
-	$attr = self::shortcode_parse_atts( $m[3][0] );
-
-	if ( isset( $m[5][0] ) )
-		$content=$m[5][0];	
-	else
-		$content=null;
-
-	$pieces=(!is_null($tag)) ? explode('.',$tag) : '';
-	$service=null;
-
-	
-	if(count($pieces)>=2){
-		$sc=array();
-		$sc['tags']=$pieces;
-		
-		//awesome handles this block
-		$handlers=self::get_array_ref('handlers');
-
-		$next_tag=$pieces[0];
-		
-		if(isset($handlers[$next_tag]) ){
-			$service=array_shift($pieces);
-			$sc['handler']=$handlers[$service];
-			$next_tag=$pieces[0];
-			
-			if(isset($sc['handler'][$next_tag])){
-				$service=array_shift($pieces);
-				$sc['handler']=$sc['handler'][$service];
-				$next_tag=null;
-				if(isset($pieces[0]))$next_tag=$pieces[0];	
-			}	
-
-			#for 3rd level		
-			if(isset($sc['handler'][$next_tag])){
-				$service=array_shift($pieces);
-				$sc['handler']=$sc['handler'][$service];
-				$next_tag=null;
-				if(isset($pieces[0]))$next_tag=$pieces[0];	
-			}	
-
-			#for 4th level		
-			if(isset($sc['handler'][$next_tag])){
-				$service=array_shift($pieces);
-				$sc['handler']=$sc['handler'][$service];
-				$next_tag=null;
-				if(isset($pieces[0]))$next_tag=$pieces[0];	
-			}				
-			
-		}
-		$sc['tags_left']=$pieces;
-		
-	}
-	
-	if($service){	
-
-		if(!empty($attr))self::pre_action_parse($attr);
-		
-		$pre_compiler_check=array('c','and','or','m','m2','o','o2');
-		$pre=array();
-		$pre['primary']=array();
-		if(!empty($attr)){
-			foreach ($attr as $key => $value) {
-				
-				$pre_key = (!is_null($key))  ? explode('.',$key) : '' ;
-				
-				if(count($pre_key)>1 && in_array($pre_key[0],$pre_compiler_check)){
-					$pre[$pre_key[0]][$pre_key[1]] = $value;
-				}else{
-					$pre['primary'][$key] = $value;
-				}
-			}
-		}	
-				
-		$check_cond = true ;
-		if(isset($pre['c'])){
-			//loop and call chain which will update all atts
-			foreach ($pre['c'] as $key => $value) {
-				if(isset($handlers['c'][$key])){
-					if (isset($handlers['c'][$key]['func']))
-						$c_fn_name=$handlers['c'][$key]['namespace'] . '\\' . $handlers['c'][$key]['func'];
-					else
-						$c_fn_name=$handlers['c'][$key]['namespace'] . '\\' . $key;
-					
-					$check_cond=call_user_func($c_fn_name, $pre['c'], '', '' );
-					if($check_cond === false && !isset($pre['or']))	return '';
-					break;
-				}
-			}
-		}
-	
-		if(isset($pre['and'])){
-			foreach ($pre['and'] as $key => $value) {
-				if(isset($handlers['c'][$key])){
-					if (isset($handlers['c'][$key]['func']))
-						$and_fn_name=$handlers['c'][$key]['namespace'] . '\\' . $handlers['c'][$key]['func'];
-					else
-						$and_fn_name=$handlers['c'][$key]['namespace'] . '\\' . $key;
-					
-					$check_and=call_user_func($and_fn_name, $pre['and'], '', '' );
-					if($check_and === false) return '';
-					break;
-				}
-			}
-		}
-	
-		if(isset($pre['or']) && ($check_cond === false)){
-			foreach ($pre['or'] as $key => $value) {
-				if(isset($handlers['c'][$key])){
-					if (isset($handlers['c'][$key]['func']))
-						$or_fn_name=$handlers['c'][$key]['namespace'] . '\\' . $handlers['c'][$key]['func'];
-					else
-						$or_fn_name=$handlers['c'][$key]['namespace'] . '\\' . $key;
-					
-					$check_or=call_user_func($or_fn_name, $pre['or'], '', '' );
-					if($check_or === false) return '';
-					break;
-				}
-			}
-		}
-		
-		/* if(isset($pre['and'])){
-			$check_and = self::checkcondition($pre['and']);
-			if($check_and === false) return '';
-		}
-	
-		if($check_cond === false && isset($pre['or'])){
-			$check_or = self::checkcondition($pre['or']);
-			if($check_or === false)	return '';			
-		} */
-		
-		$flag = false;
-		
-
-		$handler=$sc['handler'];
-		
-		//support for new structure of handler
-		if(isset($handler['#call'])){
-			$handler['type']='call';
-		}
-		
-		
-		if(isset($handler['type'])){
-			$service_type = $handler['type'];
-
-			$fn_name=null;
-			switch($service_type){
-				
-				case 'call':
-					$fn_name=$handler['#call']['namespace'] . '\\' . $handler['#call']['func'];
-					break;
-				case 'content_type_def':
-					$sc['content_type']=$sc['handler'];	
-					$sc['handler']=$handlers['content_type_def'];					
-					$service='content_type_def';
-					
-					if(isset($sc['handler'][$next_tag])){
-						$service=$next_tag;
-						$sc['handler']=$sc['handler'][$next_tag];
-						$next_tag=null;
-					}	
-					$handler = $sc['handler'];
-					
-					if(isset($handler['func']))
-						$fn_name=$handler['namespace'] . '\\' . $handler['func'];
-					else{
-							$fn_name=$handler['namespace'] . '\\' . $service;					
-					}
-					if (!is_callable($fn_name) && $next_tag)$fn_name=$handler['namespace'] . '\\'  . $next_tag;
-					if (!is_callable($fn_name))$fn_name=$handler['namespace'] . '\\'  . 'unhandled';
-					if (!is_callable($fn_name))$fn_name=null;
-					break;
-					
-				case 'collection':
-					$sc['collection']=$sc['handler'];	
-					$sc['handler']=$handlers['collection'];
-					$service='collection';
-					
-					if(isset($sc['handler'][$next_tag])){
-						$service=$next_tag;
-						$sc['handler']=$sc['handler'][$next_tag];
-						$next_tag=null;
-					}	
-					$handler = $sc['handler'];		
-		
-					if(isset($handler['func']))
-						$fn_name=$handler['namespace'] . '\\' . $handler['func'];
-					else{
-							$fn_name=$handler['namespace'] . '\\' . $service;					
-					}
-					if (!is_callable($fn_name) && $next_tag)$fn_name=$handler['namespace'] . '\\'  . $next_tag;
-					if (!is_callable($fn_name))$fn_name=$handler['namespace'] . '\\'  . 'unhandled';
-					if (!is_callable($fn_name))$fn_name=null;
-					break;
-				case 'namespace':
-					if(isset($handler['func']))
-						$fn_name=$handler['namespace'] . '\\' . $handler['func'];
-					else{
-							$fn_name=$handler['namespace'] . '\\' . $service;					
-					}
-					if (!is_callable($fn_name) && $next_tag)$fn_name=$handler['namespace'] . '\\'  . $next_tag;
-					if (!is_callable($fn_name))$fn_name=$handler['namespace'] . '\\'  . 'unhandled';
-					if (!is_callable($fn_name))$fn_name=null;
-					break;
-
-				case 'awesome':
-					if(isset($handler['func']))
-						$fn_name=$handler['func'];
-					else{
-							$fn_name='aw2_' . $service;					
-					}
-					if (!is_callable($fn_name) && $next_tag)$fn_name='aw2_' .$service . '_'  . $next_tag;
-					if (!is_callable($fn_name))$fn_name='aw2_' .$service . '_'  . 'unhandled';
-					if (!is_callable($fn_name))$fn_name=null;
-					break;
-					
-				case 'env_key':
-					$pre['primary']['_prefix']=$handler['env_key'];
-					$sc['handler']=$handlers['env'];
-					$service='env';
-					
-					if(isset($sc['handler'][$next_tag])){
-						$service=$next_tag;
-						$sc['handler']=$sc['handler'][$next_tag];
-						$next_tag=null;
-					}	
-					$handler = $sc['handler'];		
-		
-					if(isset($handler['func']))
-						$fn_name=$handler['namespace'] . '\\' . $handler['func'];
-					else{
-							$fn_name=$handler['namespace'] . '\\' . $service;					
-					}
-					if (!is_callable($fn_name) && $next_tag)$fn_name=$handler['namespace'] . '\\'  . $next_tag;
-					if (!is_callable($fn_name))$fn_name=$handler['namespace'] . '\\'  . 'unhandled';
-					if (!is_callable($fn_name))$fn_name=null;
-					break;
-			}
-			
-			if($fn_name){
-				//\util::var_dump($fn_name);
-				//\util::var_dump($sc);
-				//if(isset($sc['tags'][0]))echo $sc['tags'][0];
-
-				$flag = true;
-				$reply = call_user_func($fn_name, $pre['primary'], $content, $sc );
-			}
-		}
-		
-		if ($flag===true){
-			if(isset($pre['m'])){
-				//$reply=self::modify_output($reply,$pre['m']);
-				foreach ($pre['m'] as $key => $value) {
-					if(isset($handlers['m'][$key])){
-						if (isset($handlers['m'][$key]['func']))
-							$m_fn_name=$handlers['m'][$key]['namespace'] . '\\' . $handlers['m'][$key]['func'];
-						else
-							$m_fn_name=$handlers['m'][$key]['namespace'] . '\\' . $key;
-						$reply=call_user_func($m_fn_name, $reply, $pre['m'] );
-					}
-				}
-			}
-			if(isset($pre['m2'])){
-				foreach ($pre['m2'] as $key => $value) {
-					if(isset($handlers['m'][$key])){
-						if (isset($handlers['m'][$key]['func']))
-							$m_fn_name=$handlers['m'][$key]['namespace'] . '\\' . $handlers['m'][$key]['func'];
-						else
-							$m_fn_name=$handlers['m'][$key]['namespace'] . '\\' . $key;
-						$reply=call_user_func($m_fn_name, $reply, $pre['m2'] );
-					}
-				}
-			}
-			if(isset($pre['o'])){
-				//$reply=self::redirect_output($reply,$pre['o']);
-				foreach ($pre['o'] as $key => $value) {
-					if(isset($handlers['o'][$key])){
-						if (isset($handlers['o'][$key]['func']))
-							$o_fn_name=$handlers['o'][$key]['namespace'] . '\\' . $handlers['o'][$key]['func'];
-						else
-							$o_fn_name=$handlers['o'][$key]['namespace'] . '\\' . $key;
-						$reply=call_user_func($o_fn_name, $reply, $pre['o'] );
-					}
-				}
-			}
-			if(isset($pre['o2'])){
-				//$reply=self::redirect_output($reply,$pre['o']);
-				foreach ($pre['o2'] as $key => $value) {
-					if(isset($handlers['o'][$key])){
-						if (isset($handlers['o'][$key]['func']))
-							$o_fn_name=$handlers['o'][$key]['namespace'] . '\\' . $handlers['o'][$key]['func'];
-						else
-							$o_fn_name=$handlers['o'][$key]['namespace'] . '\\' . $key;
-						$reply=call_user_func($o_fn_name, $reply, $pre['o2'] );
-					}
-				}
-			}
-		if(is_array($reply) || is_object($reply)){
-			self::user_notice("[A Shortcode ($tag) has replied with an array/object and there is no set command]");
-			return;
-		}	
-		return $m[1][0] . $reply . $m[6][0];
-		}
-		
-			
-	}
-	
-	if(isset($shortcode_tags[$tag])){
-		return $m[1][0] . call_user_func( $shortcode_tags[$tag], $attr, $content, $tag ) . $m[6][0];
-	}
-
-	return $m[0][0];
-	
-}
 
 static function shortcode_tag( $m ) {
 	//php8OK	
@@ -1286,9 +849,11 @@ static function shortcode_tag( $m ) {
 	if ( $m[1][0] === '[' && $m[6][0] === ']' ) {
 		return substr($m[0][0], 1, -1);
 	}
+ 
 
 	$tag = $m[2][0];
 	$attr = self::shortcode_parse_atts( $m[3][0] );
+
 
 	if ( isset( $m[5][0] ) )
 		$content=$m[5][0];	
@@ -1302,8 +867,10 @@ static function shortcode_tag( $m ) {
 	if ( isset( $m[5][0] ) )
 		$inputs['content']=$m[5][0];	
 
+
 	$reply=self::process_handler($inputs);
 
+ 
 	if($reply==='#not_awesome_sc#'){
 		if(isset($shortcode_tags[$tag])){
 			return $m[1][0] . call_user_func( $shortcode_tags[$tag], $attr, $content, $tag ) . $m[6][0];
@@ -1314,16 +881,17 @@ static function shortcode_tag( $m ) {
 
 	if(is_array($reply) || is_object($reply)){
 		//trigger error and continue		
-		//self::user_notice("[A Shortcode ($tag) has replied with an array/object and there is no set command]");
+		self::user_notice("[A Shortcode ($tag) has replied with an array/object and there is no set command]");
+		$reply=print_r($reply, true);
 		//return;
-	}	
+	}		
 	return $m[1][0] . $reply . $m[6][0];
 }
 
 static function process_handler($inputs){
 
 	if(isset($inputs['tags']))
-		$pieces=(!is_null($inputs['tags'])) ? explode('.',$inputs['tags']) : '';
+		$pieces=self::safe_explode('.',$inputs['tags']);
 	else
 		$pieces=$inputs['pieces'];
 	
@@ -1333,9 +901,39 @@ static function process_handler($inputs){
 	if ( isset( $inputs['content']) )
 		$content=$inputs['content'];	
 
+	$atts=array();
+	if ( isset( $inputs['atts']) )
+		$atts=$inputs['atts'];	
+		
 
 	$sc=array();
 	$sc['tags']=$pieces;
+
+	if(self::is_live_debug()){
+		
+		$live_debug_event=array();
+		$live_debug_event['flow']='sc';
+		$live_debug_event['action']='sc.called';
+		$live_debug_event['command']=implode('.',$pieces);
+		$live_debug_event['content']=substr(print_r($content, true),0,500);
+		$live_debug_event['atts']=$atts;
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#F5EDDC']);
+	}
+
+	if(self::is_live_debug()){
+		$cc=str_replace('.','\.',$live_debug_event['command']);
+
+		$re = '/\[' . $cc .'((\s+.*\])|(\]))/m';
+		$match=preg_match($re, $content);
+		if($match===1){
+			$live_debug_event['action']='sc.same_tag_error';
+			$temp_debug=$live_debug_event;
+			$temp_debug['error']='yes';
+			$temp_debug['error_type']='same_tag_error';
+			\aw2\live_debug\publish_event(['event'=>$temp_debug,'bgcolor'=>'#CFD2CF']);
+		}
+	}
+	
 		
 	//awesome handles this block
 	$handlers=self::get_array_ref('handlers');
@@ -1374,31 +972,97 @@ static function process_handler($inputs){
 	}
 	$sc['tags_left']=$pieces;
 
-	if(is_null($service))return '';
+	if(is_null($service)){
+		if(self::is_live_debug()){
+			$live_debug_event['action']='sc.not_found';
+			$temp_debug=$live_debug_event;
+			$temp_debug['error']='yes';
+			$temp_debug['error_type']='missing_sc';
+			\aw2\live_debug\publish_event(['event'=>$temp_debug,'bgcolor'=>'#CFD2CF']);
+		}
+		
+		return '';	
+	}
+	
+	$handler=$sc['handler'];
+	
+	//support for new structure of handler
+	if(isset($handler['#call'])){
+		$handler['type']='call';
+	}
+	
 
-	$atts=array();
-	if ( isset( $inputs['atts']) )
-		$atts=$inputs['atts'];	
+	if(self::is_live_debug()){
+		$live_debug_event['action']='sc.found';
+		$live_debug_event['handler']=$sc['handler'];
+		$live_debug_event['service_type']=(isset($handler['type'])?$handler['type']:'none');
+		$live_debug_event['keys_left']=implode('.',$sc['tags_left']);
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#FFDEDE']);
+	}
+	
 
 	if(!empty($atts))self::pre_action_parse($atts);
 
 	$pre_compiler_check=array('c','and','or','m','m2','o','o2');
+	$pre_processor_check=array('when','when.1','pipe','pipe.1','out','out.1','content','atts');
+
 	$pre=array();
 	$pre['primary']=array();
 		
 	if(!empty($atts)){
 		foreach ($atts as $key => $value) {
+
+			$processor_key = self::safe_explode(':',$key,2);
 			
-			$pre_key = (!is_null($key)) ?  explode('.',$key) : '';
-			
-			if(count($pre_key)>1 && in_array($pre_key[0],$pre_compiler_check)){
-				$pre[$pre_key[0]][$pre_key[1]] = $value;
-			}else{
-				$pre['primary'][$key] = $value;
+			if(count($processor_key)>1 && in_array($processor_key[0],$pre_processor_check)){
+				$pre[$processor_key[0] . ':'][$processor_key[1]] = $value;
+			}
+			else{
+				$pre_key = self::safe_explode('.',$key);
+				
+				if(count($pre_key)>1 && in_array($pre_key[0],$pre_compiler_check)){
+					$pre[$pre_key[0]][$pre_key[1]] = $value;
+				}else{
+					$pre['primary'][$key] = $value;
+				}
 			}
 		}
+	}
+
+
+	if(isset($pre['content:']['@'])){
+		$content=self::get($pre['content:']['@']);
+	}
+
+	if(isset($pre['content:']['path'])){
+		$content=self::get($pre['content:']['path']);
+	}
+	
+	
+	if(isset($pre['atts:']['path'])){
+		$pre['primary'] = array_merge(self::get($pre['atts:']['path']),$pre['primary']);
+	}
+
+	if(isset($pre['atts:']['arr'])){
+		$pre['primary'] = array_merge($pre['atts:']['arr'],$pre['primary']);
 	}	
-				
+
+	if(self::is_live_debug()){
+		$live_debug_event['action']='sc.parsed';
+		$live_debug_event['parsed_atts']=$pre;
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#F7F5F2']);
+	}
+
+	if(isset($pre['when:'])){
+		$c_reply=\aw2\when_colon\when_check($pre['when:']);
+		if($c_reply===false)return '';
+	}
+
+	if(isset($pre['when.1:'])){
+		$c_reply=\aw2\when_colon\when_check($pre['when.1:']);
+		if($c_reply===false)return '';
+	}
+
 	$check_cond = true ;
 	if(isset($pre['c'])){
 		//loop and call chain which will update all atts
@@ -1410,7 +1074,16 @@ static function process_handler($inputs){
 					$c_fn_name=$handlers['c'][$key]['namespace'] . '\\' . $key;
 
 				$check_cond=call_user_func($c_fn_name, $pre['c'], '', '' );
-				if($check_cond === false && !isset($pre['or']))	return '';
+				if($check_cond === false && !isset($pre['or'])){
+
+					if(self::is_live_debug()){
+						$live_debug_event['action']='sc.not_executed';
+						$live_debug_event['reason']='cond failed';
+						\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#DFDFDE']);
+					}
+
+					return '';
+				}	
 				break;
 			}
 		}
@@ -1425,7 +1098,15 @@ static function process_handler($inputs){
 					$and_fn_name=$handlers['c'][$key]['namespace'] . '\\' . $key;
 				
 				$check_and=call_user_func($and_fn_name, $pre['and'], '', '' );
-				if($check_and === false) return '';
+				if($check_and === false){
+					
+					if(self::is_live_debug()){
+						$live_debug_event['action']='sc.not_executed';
+						$live_debug_event['reason']='and failed';
+						\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#DFDFDE']);
+					}
+					return '';
+				}	
 				break;
 			}
 		}
@@ -1440,7 +1121,15 @@ static function process_handler($inputs){
 					$or_fn_name=$handlers['c'][$key]['namespace'] . '\\' . $key;
 				
 				$check_or=call_user_func($or_fn_name, $pre['or'], '', '' );
-				if($check_or === false) return '';
+				if($check_or === false){
+					
+					if(self::is_live_debug()){
+						$live_debug_event['action']='sc.not_executed';
+						$live_debug_event['reason']='or failed';
+						\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#DFDFDE']);
+					}
+					return '';
+				}	
 				break;
 			}
 		}
@@ -1589,8 +1278,33 @@ static function process_handler($inputs){
 	}
 
 	if(!$fn_name)throw new BadMethodCallException('Handler does not have a func');; 
+
+	if(self::is_live_debug()){
+		$live_debug_event['action']='sc.command.executing';
+		$live_debug_event['call']=array();
+		$live_debug_event['call']['fn_name']=$fn_name;
+		$live_debug_event['call']['atts']=$pre['primary'];
+		$live_debug_event['call']['content']=substr($content,0,500);
+		$live_debug_event['call']['sc']=$sc;
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#CDDEFF']);
+	}
 	
 	$reply = call_user_func($fn_name, $pre['primary'], $content, $sc );
+
+	if(self::is_live_debug()){
+		$live_debug_event['action']='sc.command.executed';
+		$live_debug_event['command_result']=substr(print_r($reply, true),0,500);
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#EEF2FF']);
+	}	
+
+	if(isset($pre['pipe:'])){
+		$reply=\aw2\pipe_colon\pipe_run($pre['pipe:'],$reply);
+	}
+	
+	if(isset($pre['pipe.1:'])){
+		$reply=\aw2\pipe_colon\pipe_run($pre['pipe.1:'],$reply);
+	}
+	
 	if(isset($pre['m'])){
 		//$reply=self::modify_output($reply,$pre['m']);
 		foreach ($pre['m'] as $key => $value) {
@@ -1614,6 +1328,22 @@ static function process_handler($inputs){
 			}
 		}
 	}
+	
+	if(self::is_live_debug()){
+		$live_debug_event['action']='sc.m.executed';
+		$live_debug_event['m_result']=substr(print_r($reply, true),0,500);
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#71DFE7']);
+	}	
+
+	if(isset($pre['out:'])){
+		$final=\aw2\out_colon\out_run($pre['out:'],$reply);
+		if(!isset($pre['out.1:']))$reply=$final;
+	}
+	if(isset($pre['out.1:'])){
+		$reply=\aw2\out_colon\out_run($pre['out.1:'],$reply);
+	}
+
+
 	if(isset($pre['o'])){
 		//$reply=self::redirect_output($reply,$pre['o']);
 		foreach ($pre['o'] as $key => $value) {
@@ -1638,308 +1368,23 @@ static function process_handler($inputs){
 			}
 		}
 	}
+	
+	if(self::is_live_debug()){
+		$live_debug_event['action']='sc.o.executed';
+		$live_debug_event['o_result']=substr(print_r($reply, true),0,500);
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#F5E8C7']);
+	}
+	
+	
+	if(self::is_live_debug()){
+		$live_debug_event['action']='sc.done';
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#ECCCB2']);
+	}
+
+	
 	return $reply;	
 }
-
-static function shortcode_tag_old( $m ) {
-	//php8OK	
-	
-		
-	global $shortcode_tags;
-	if(isset(self::$stack['_return']))return '';
-	
-	// allow [[foo]] syntax for escaping a tag
-	if ( $m[1] === '[' && $m[6] === ']' ) {
-		return substr($m[0], 1, -1);
-	}
-
-	$tag = $m[2];
-	$attr = self::shortcode_parse_atts( $m[3] );
-
-	if ( isset( $m[5] ) )
-		$content=$m[5];	
-	else
-		$content=null;
-
-	$pieces=(!is_null($key)) ?  explode('.',$tag) : '';
-	$service=null;
-
-	
-	if(count($pieces)>=2){
-		$sc=array();
-		$sc['tags']=$pieces;
-		
-		//awesome handles this block
-		$handlers=self::get_array_ref('handlers');
-
-		$next_tag=$pieces[0];
-		
-		if(isset($handlers[$next_tag]) ){
-			$service=array_shift($pieces);
-			$sc['handler']=$handlers[$service];
-			$next_tag=$pieces[0];
-			
-			if(isset($sc['handler'][$next_tag])){
-				$service=array_shift($pieces);
-				$sc['handler']=$sc['handler'][$service];
-				$next_tag=null;
-				if(isset($pieces[0]))$next_tag=$pieces[0];	
-			}	
-		}
-		$sc['tags_left']=$pieces;
-		
-	}
-	
-	if($service){	
-
-		if(!empty($attr))self::pre_action_parse($attr);
-		
-		$pre_compiler_check=array('c','and','or','m','m2','o','o2');
-		$pre=array();
-		$pre['primary']=array();
-		if(!empty($attr)){
-			foreach ($attr as $key => $value) {
-				
-				$pre_key = (!is_null($key)) ? explode('.',$key) : '';
-				
-				if(count($pre_key)>1 && in_array($pre_key[0],$pre_compiler_check)){
-					$pre[$pre_key[0]][$pre_key[1]] = $value;
-				}else{
-					$pre['primary'][$key] = $value;
-				}
-			}
-		}	
-				
-		$check_cond = true ;
-		if(isset($pre['c'])){
-			//loop and call chain which will update all atts
-			foreach ($pre['c'] as $key => $value) {
-				if(isset($handlers['c'][$key])){
-					if (isset($handlers['c'][$key]['func']))
-						$c_fn_name=$handlers['c'][$key]['namespace'] . '\\' . $handlers['c'][$key]['func'];
-					else
-						$c_fn_name=$handlers['c'][$key]['namespace'] . '\\' . $key;
-					
-					$check_cond=call_user_func($c_fn_name, $pre['c'], '', '' );
-					if($check_cond === false && !isset($pre['or']))	return '';
-					break;
-				}
-			}
-		}
-	
-		if(isset($pre['and'])){
-			foreach ($pre['and'] as $key => $value) {
-				if(isset($handlers['c'][$key])){
-					if (isset($handlers['c'][$key]['func']))
-						$and_fn_name=$handlers['c'][$key]['namespace'] . '\\' . $handlers['c'][$key]['func'];
-					else
-						$and_fn_name=$handlers['c'][$key]['namespace'] . '\\' . $key;
-					
-					$check_and=call_user_func($and_fn_name, $pre['and'], '', '' );
-					if($check_and === false) return '';
-					break;
-				}
-			}
-		}
-	
-		if(isset($pre['or']) && ($check_cond === false)){
-			foreach ($pre['or'] as $key => $value) {
-				if(isset($handlers['c'][$key])){
-					if (isset($handlers['c'][$key]['func']))
-						$or_fn_name=$handlers['c'][$key]['namespace'] . '\\' . $handlers['c'][$key]['func'];
-					else
-						$or_fn_name=$handlers['c'][$key]['namespace'] . '\\' . $key;
-					
-					$check_or=call_user_func($or_fn_name, $pre['or'], '', '' );
-					if($check_or === false) return '';
-					break;
-				}
-			}
-		}
-		
-		/* if(isset($pre['and'])){
-			$check_and = self::checkcondition($pre['and']);
-			if($check_and === false) return '';
-		}
-	
-		if($check_cond === false && isset($pre['or'])){
-			$check_or = self::checkcondition($pre['or']);
-			if($check_or === false)	return '';			
-		} */
-		
-		$flag = false;
-		
-		
-		$handler=$sc['handler'];
-		if(isset($handler['type'])){
-			$service_type = $handler['type'];
-
-			$fn_name=null;
-			switch($service_type){
-				
-				case 'content_type_def':
-					$sc['content_type']=$sc['handler'];	
-					$sc['handler']=$handlers['content_type_def'];					
-					$service='content_type_def';
-					
-					if(isset($sc['handler'][$next_tag])){
-						$service=$next_tag;
-						$sc['handler']=$sc['handler'][$next_tag];
-						$next_tag=null;
-					}	
-					$handler = $sc['handler'];
-					
-					if(isset($handler['func']))
-						$fn_name=$handler['namespace'] . '\\' . $handler['func'];
-					else{
-							$fn_name=$handler['namespace'] . '\\' . $service;					
-					}
-					if (!is_callable($fn_name) && $next_tag)$fn_name=$handler['namespace'] . '\\'  . $next_tag;
-					if (!is_callable($fn_name))$fn_name=$handler['namespace'] . '\\'  . 'unhandled';
-					if (!is_callable($fn_name))$fn_name=null;
-					break;
-					
-				case 'collection':
-					$sc['collection']=$sc['handler'];	
-					$sc['handler']=$handlers['collection'];
-					$service='collection';
-					
-					if(isset($sc['handler'][$next_tag])){
-						$service=$next_tag;
-						$sc['handler']=$sc['handler'][$next_tag];
-						$next_tag=null;
-					}	
-					$handler = $sc['handler'];		
-		
-					if(isset($handler['func']))
-						$fn_name=$handler['namespace'] . '\\' . $handler['func'];
-					else{
-							$fn_name=$handler['namespace'] . '\\' . $service;					
-					}
-					if (!is_callable($fn_name) && $next_tag)$fn_name=$handler['namespace'] . '\\'  . $next_tag;
-					if (!is_callable($fn_name))$fn_name=$handler['namespace'] . '\\'  . 'unhandled';
-					if (!is_callable($fn_name))$fn_name=null;
-					break;
-				case 'namespace':
-					if(isset($handler['func']))
-						$fn_name=$handler['namespace'] . '\\' . $handler['func'];
-					else{
-							$fn_name=$handler['namespace'] . '\\' . $service;					
-					}
-					if (!is_callable($fn_name) && $next_tag)$fn_name=$handler['namespace'] . '\\'  . $next_tag;
-					if (!is_callable($fn_name))$fn_name=$handler['namespace'] . '\\'  . 'unhandled';
-					if (!is_callable($fn_name))$fn_name=null;
-					break;
-
-				case 'awesome':
-					if(isset($handler['func']))
-						$fn_name=$handler['func'];
-					else{
-							$fn_name='aw2_' . $service;					
-					}
-					if (!is_callable($fn_name) && $next_tag)$fn_name='aw2_' .$service . '_'  . $next_tag;
-					if (!is_callable($fn_name))$fn_name='aw2_' .$service . '_'  . 'unhandled';
-					if (!is_callable($fn_name))$fn_name=null;
-					break;
-					
-				case 'env_key':
-					$pre['primary']['_prefix']=$handler['env_key'];
-					$sc['handler']=$handlers['env'];
-					$service='env';
-					
-					if(isset($sc['handler'][$next_tag])){
-						$service=$next_tag;
-						$sc['handler']=$sc['handler'][$next_tag];
-						$next_tag=null;
-					}	
-					$handler = $sc['handler'];		
-		
-					if(isset($handler['func']))
-						$fn_name=$handler['namespace'] . '\\' . $handler['func'];
-					else{
-							$fn_name=$handler['namespace'] . '\\' . $service;					
-					}
-					if (!is_callable($fn_name) && $next_tag)$fn_name=$handler['namespace'] . '\\'  . $next_tag;
-					if (!is_callable($fn_name))$fn_name=$handler['namespace'] . '\\'  . 'unhandled';
-					if (!is_callable($fn_name))$fn_name=null;
-					break;
-			}
-			
-			if($fn_name){
-				//\util::var_dump($fn_name);
-				//\util::var_dump($sc);
-				//if(isset($sc['tags'][0]))echo $sc['tags'][0];
-
-				$flag = true;
-				$reply = call_user_func($fn_name, $pre['primary'], $content, $sc );
-			}
-		}
-		
-		if ($flag===true){
-			if(isset($pre['m'])){
-				//$reply=self::modify_output($reply,$pre['m']);
-				foreach ($pre['m'] as $key => $value) {
-					if(isset($handlers['m'][$key])){
-						if (isset($handlers['m'][$key]['func']))
-							$m_fn_name=$handlers['m'][$key]['namespace'] . '\\' . $handlers['m'][$key]['func'];
-						else
-							$m_fn_name=$handlers['m'][$key]['namespace'] . '\\' . $key;
-						$reply=call_user_func($m_fn_name, $reply, $pre['m'] );
-					}
-				}
-			}
-			if(isset($pre['m2'])){
-				foreach ($pre['m2'] as $key => $value) {
-					if(isset($handlers['m'][$key])){
-						if (isset($handlers['m'][$key]['func']))
-							$m_fn_name=$handlers['m'][$key]['namespace'] . '\\' . $handlers['m'][$key]['func'];
-						else
-							$m_fn_name=$handlers['m'][$key]['namespace'] . '\\' . $key;
-						$reply=call_user_func($m_fn_name, $reply, $pre['m2'] );
-					}
-				}
-			}
-			if(isset($pre['o'])){
-				//$reply=self::redirect_output($reply,$pre['o']);
-				foreach ($pre['o'] as $key => $value) {
-					if(isset($handlers['o'][$key])){
-						if (isset($handlers['o'][$key]['func']))
-							$o_fn_name=$handlers['o'][$key]['namespace'] . '\\' . $handlers['o'][$key]['func'];
-						else
-							$o_fn_name=$handlers['o'][$key]['namespace'] . '\\' . $key;
-						$reply=call_user_func($o_fn_name, $reply, $pre['o'] );
-					}
-				}
-			}
-			if(isset($pre['o2'])){
-				//$reply=self::redirect_output($reply,$pre['o']);
-				foreach ($pre['o2'] as $key => $value) {
-					if(isset($handlers['o'][$key])){
-						if (isset($handlers['o'][$key]['func']))
-							$o_fn_name=$handlers['o'][$key]['namespace'] . '\\' . $handlers['o'][$key]['func'];
-						else
-							$o_fn_name=$handlers['o'][$key]['namespace'] . '\\' . $key;
-						$reply=call_user_func($o_fn_name, $reply, $pre['o2'] );
-					}
-				}
-			}
-		if(is_array($reply) || is_object($reply)){
-			self::user_notice("[A Shortcode ($tag) has replied with an array/object and there is no set command]");
-			return;
-		}	
-		return $m[1] . $reply . $m[6];
-		}
-		
-			
-	}
-	
-	if(isset($shortcode_tags[$tag])){
-		return $m[1] . call_user_func( $shortcode_tags[$tag], $attr, $content, $tag ) . $m[6];
-	}
-
-	return $m[0];
-	
-}
+ 
 
 static function resolve_chain($str,&$atts=null,$content=null){
 	//php8OK	
@@ -1994,7 +1439,7 @@ static function resolve_chain($str,&$atts=null,$content=null){
 static function shortcode_parse_atts($text) {
 	//php8OK	
 	$atts = array();
-	$pattern = '/([-a-zA-Z0-9_.@\$]+)\s*=\s*"([^"]*)"(?:\s|$)|([-a-zA-Z0-9_.@\$]+)\s*=\s*\'([^\']*)\'(?:\s|$)|([-a-zA-Z0-9_.@\$]+)\s*=\s*([^\s\'"]+)(?:\s|$)|"([^"]*)"(?:\s|$)|(\S+)(?:\s|$)/';
+	$pattern = '/([-a-zA-Z0-9_.@\$:\^]+)\s*=\s*"([^"]*)"(?:\s|$)|([-a-zA-Z0-9_.@\$:\^]+)\s*=\s*\'([^\']*)\'(?:\s|$)|([-a-zA-Z0-9_.@\$:\^]+)\s*=\s*([^\s\'"]+)(?:\s|$)|"([^"]*)"(?:\s|$)|(\S+)(?:\s|$)/';
 	$text = preg_replace("/[\x{00a0}\x{200b}]+/u", " ", $text);
 	if ( preg_match_all($pattern, $text, $match, PREG_SET_ORDER) ) {
 		foreach ($match as $m) {
@@ -2019,7 +1464,7 @@ static function shortcode_parse_atts($text) {
 			}
 		}
 	} else {
-		$atts = (!is_null($text)) ? trim($text) :'' ;
+		$atts =  self::safe_ltrim($text);
 	}
 	return $atts;
 }
@@ -2047,7 +1492,7 @@ static function remove_service($keys) {
 	//php8OK	
 	$current=&self::get_array_ref('handlers');
 	
-	if(!is_array($keys))$keys= (!is_null($keys)) ? explode('.',$keys) : '';	
+	if(!is_array($keys))$keys= self::safe_explode('.',$keys);	
 	
 	while(!empty($keys)){
 		$key=array_shift($keys);
@@ -2068,8 +1513,22 @@ static function add_handler($name,$call,$desc='',$prop=array()) {
 	self::set('handlers.' . $name,$build);
 }
 
+static function get_env_path($expr,$notfound='#error#'){
+	
+	$current=self::$stack;
+	
+	if(!is_array($expr))$expr=explode('.',$expr);	
+	
+	while(count($expr)>0){
+		$key=array_shift($expr);
+		if(isset($current[$key]))	$current=$current[$key];
+		else if(isset($current->$key))$current=$current->$key;
+		else	return $notfound;
+	}
+	return $current;
+}
 
-static function add_service($service,$desc=null,$atts=array()) {
+static function add_service_backup($service,$desc=null,$atts=array()) {
 	
 	//php8OK	
 	$atts['desc']=$desc;
@@ -2114,9 +1573,11 @@ static function add_service($service,$desc=null,$atts=array()) {
 	}
 	
 	if(isset($atts['post_type']) || isset($atts['source'])){
+		$handler=&self::get_array_ref('handlers',$service);
 		$atts['type'] = 'collection';
 		$atts['@service'] = true;
-		self::set('handlers.' . $service,$atts);
+		$handler = array_merge($handler,$atts);
+
 		return;
 	}
 
@@ -2144,19 +1605,52 @@ static function add_service($service,$desc=null,$atts=array()) {
 	return;
 }
 
+static function add_service($service,$desc=null,$atts=array()) {
+	
+	//php8OK	
+	$atts['desc']=$desc;
+	$atts['@service'] = true;
+	$arr=self::get_env_path('handlers.' . $service,'');
+	if(!is_array($arr))$arr=array();
+	$final=array_merge($arr,$atts);
+	
+	switch (true) {
+		case isset($atts['code']):
+			$final['type'] = 'namespace';
+			break;
+		case isset($atts['content_type_def']):
+			$final['type'] = 'content_type_def';
+			break;
+		case isset($atts['content_type']):
+			$final['type'] = 'content_type';
+			break;
+		case isset($atts['app']):
+			$final['type'] = 'app';
+			break;
+		case isset($atts['module']):
+			$final['type'] = 'module';
+			break;
+		case isset($atts['post_type']) || isset($atts['source']):
+			$final['type'] = 'collection';
+			break;
+		case isset($atts['env_key']):
+			$final['type'] = 'env_key';
+			break;
+		case isset($atts['namespace']):
+			$final['type'] = 'namespace';
+			break;
+		default:
+			$final['type'] = 'awesome';
+	}
+
+	self::set('handlers.' . $service,$final);
+	return;
+}
+
 static function add_ref($service,$ref_to) {
 	//php8OK	
 	self::$stack['handlers'][$service]=&self::get_array_ref('handlers',$ref_to);
 }
-/*
-static function add_collection($name,$atts,$desc=null) {
-	$arr=$atts;
-	$arr['alias']='collection';
-	$arr['desc']=$desc;
-	$handler=&self::get_array_ref('handlers',$name);
-	$handler=array_merge($handler,$arr);
-}
-*/
 
 
 static function register_service($name,$atts,$desc=null) {
@@ -2188,7 +1682,7 @@ static function get_shortcode_regex() {
 	}
 
 	$tagregexp = join( '|', array_map('preg_quote', $tagnames) );
-	$tagregexp = $tagregexp . '|(?:[a-zA-Z0-9\-_@])+\.(?:[a-zA-Z0-9\-._@])+';
+	$tagregexp = $tagregexp . '|(?:[a-zA-Z0-9\-_@\^])+\.(?:[a-zA-Z0-9\-._@])+';
 	// WARNING! Do not change this regex without changing do_shortcode_tag() and strip_shortcode_tag()
 	// Also, see shortcode_unautop() and shortcode.js.
 	return
@@ -2280,7 +1774,7 @@ static function set_error($msg){
 
 
 //pre actions	
-static function pre_actions($actions,&$atts=null,$content,$shortcode=null){
+static function pre_actions($actions,&$atts=null,$content=null,$shortcode=null){
 	//php8OK	
 	$return_value=true;
 	if(!$atts) return $return_value;
@@ -2312,6 +1806,7 @@ static function pre_action_parse(&$atts) {
 	
 	foreach ($atts as $key =>$value) {
 		$pattern = '/{\s*\"/';
+		//This is to allow json to go through because json always starts with { and then a double quote
 		if (is_string($value) && preg_match($pattern, $value)!==1 && strpos($value, '{') !== false && strpos($value, '}') !== false) {
 
 			$startpos = strrpos($value, "{");
@@ -2337,9 +1832,14 @@ static function pre_action_parse(&$atts) {
 		if(is_string($atts[$key])){
 			$parts=explode(':',$atts[$key],2);
 			if(count($parts)===2){
+				if($parts[0]==='get')$atts[$key]=self::get($parts[1]);
+				if($parts[0]==='request2')$atts[$key]=\aw2\request2\get(['main'=>$parts[1]]);
+				if($parts[0]==='x')$atts[$key]=self::parse_single('[' . $parts[1] . ']');				
 				if($parts[0]==='int')$atts[$key]=(int)$parts[1];
 				if($parts[0]==='num')$atts[$key]=(float)$parts[1];
 				if($parts[0]==='str')$atts[$key]=(string)$parts[1];
+				if($parts[0]==='null')$atts[$key]=null;
+				if($parts[0]==='arr' && $parts[1]==='empty')$atts[$key]=array();
 				if($parts[0]==='comma')$atts[$key]=explode(',', (string)$parts[1]);
 				if($parts[0]==='bool'){
 					if($parts[1] === '' || $parts[1] === 'false')
@@ -2816,7 +2316,7 @@ static function modify_output($value,&$atts){
 		
 		//trim
 		if(array_key_exists('trim',$atts) ){
-			$value = (!is_null($value)) ? trim($value) : '';
+			$value =  self::safe_trim($value);
 		}
 		
 		//length
@@ -2994,10 +2494,10 @@ static function sentenceCase($value) {
     $return_value = ''; 
     foreach ($sentences as $key => $sentence) { 
         $return_value .= ($key & 1) == 0? 
-            ucfirst(strtolower( (!is_null($sentence)) ? trim($sentence) : '' )) : 
+            ucfirst(strtolower( self::safe_trim($sentence) )) : 
             $sentence.' '; 
     } 
-    return (!is_null($return_value)) ? trim($return_value) : ''; 
+    return self::safe_trim($return_value); 
 }
 
 static function redirect_output($value,&$atts){
@@ -3128,15 +2628,25 @@ static function pop_child($stack_id){
 	$reverse=array_reverse ($stack);
 	foreach ($reverse as $key => $value) {
 		unset(self::$stack['call_stack'][$key]);
-		if(isset($value['obj_type'])){
+
+		if(isset($value['#_obj_#'])){
+            unset(self::$stack[$value['#_obj_#']['stack_path']]);
+        }
+        elseif(isset($value['obj_type'])){
 			unset(self::$stack[$value['obj_type']]);
 		}
+
 		if($key==$stack_id)
 				break;
 	}
 	
 	reset($stack);	
 	foreach ($stack as $key => $value) {
+        if(isset($value['#_obj_#']['stack_path'])){
+            self::$stack[$value['#_obj_#']['stack_path']]=&$stack[$key];	
+             continue;   
+        }
+
 		if(isset($value['obj_type'])){
 			self::$stack[$value['obj_type']]=&$stack[$key];	
 		}
@@ -3149,7 +2659,7 @@ static function last_child($obj_type){
 	$stack=&self::get_array_ref('call_stack');
 	$new_obj=null;
 	foreach ($stack as $key => $value) {
-		if(!isset($stack[$key]['obj_type'])){
+		if(!isset($stack[$key]['obj_type']) && !isset($stack[$key]['#_obj_#']['obj_type']) ){
 			self::user_notice("[You have destroyed the Key $key in the stack]");
 			if (DEVELOP_FOR_AWESOMEUI){
 				\util::var_dump($stack[$key]);
@@ -3158,8 +2668,9 @@ static function last_child($obj_type){
 			}
 		}
 		
-		if($stack[$key]['obj_type']==$obj_type)
+		if(isset($stack[$key]['obj_type']) &&  $stack[$key]['obj_type']==$obj_type){
 			$new_obj=$key;
+		}
 	}
 	return $new_obj;	
 }
@@ -3212,9 +2723,9 @@ static function set($key,$value,$content=null,$atts=null){
 	'overwrite'=>'yes'
 	), $atts) );
 	if($key==null || $key=='')return;
-	$return_value=null;
-	if($value===null)$value=(!is_null($content)) ? trim(self::parse_shortcode($content)) : '';
-	
+
+	if($value===null)$value=self::safe_trim(self::parse_shortcode($content));
+
 	$pieces=explode('.',$key);
 	switch ($pieces[0]) {
 		case 'session':
@@ -3252,13 +2763,21 @@ static function set($key,$value,$content=null,$atts=null){
 			reset($arr);
 		break;
 		case 'first':
-			reset($arr);
-			$pieces[0]= key($arr); 
+			if(is_array($arr)){
+				reset($arr);
+				$pieces[0]= key($arr); 
+			}else{
+				throw new InvalidArgumentException('first: Array expected');
+			}
 		break;
 		case 'last':
-			end($arr);
+			if(is_array($arr)){
+				end($arr);
 			$pieces[0]= key($arr); 
-			reset($arr);
+				reset($arr);
+			}else{
+				throw new InvalidArgumentException('last: Array expected');
+			}
 		break;
 	}
 		
@@ -3357,11 +2876,11 @@ static function get($main,&$atts=null,$content=null){
 	if(is_object($main))return 'object was passed to get';
 	
 	
-	$o->pieces=(!is_null($main)) ? explode('.',$main) : '';
+	$o->pieces=self::safe_explode('.',$main);
 	$o->value='';
 	
 	self::get_start($o);
-
+	if(is_array($o->pieces) && (!empty($o->pieces)) ){
 	while(count($o->pieces)>0) {
 		
 		$values=array_values($o->pieces);
@@ -3389,6 +2908,7 @@ static function get($main,&$atts=null,$content=null){
 		}
 		
 	}
+} 
 	if($o->value==='_error') 
 		$o->value='';
 
@@ -4313,7 +3833,7 @@ static function resolve_string($o){
 			break;
 		case 'esc_sql':
 			array_shift($o->pieces);
-			$o->value=esc_sql($string);
+			$o->value=self::esc_sql($string);
 			break;			
 		case 'encrypt':
 			array_shift($o->pieces);
@@ -4330,12 +3850,12 @@ static function resolve_string($o){
 			break;
 		case 'comma':
 			array_shift($o->pieces);
-			$o->value=(!is_null($string)) ? explode('.', trim($string)) :'';
+			$o->value=self::safe_explode(',', self::safe_trim($string));
 			$o->value=array_map('trim',$o->value);
 			break;
 		case 'dot':
 			array_shift($o->pieces);
-			$o->value=(!is_null($string)) ? explode('.', trim($string)):'';
+			$o->value=self::safe_explode('.', self::safe_trim($string));
 			$o->value=array_map('trim',$o->value);
 			break;			
 		case 'run':
@@ -4362,12 +3882,12 @@ static function resolve_string($o){
 			break;
 		case 'space':
 			array_shift($o->pieces);
-			$o->value=explode(' ', (!is_null($string)) ? trim($string)) : '';
+			$o->value=self::safe_explode(' ',trim($string));
 			$o->value=array_map('trim',$o->value);
 			break;
 		case 'trim':
 			array_shift($o->pieces);
-			$o->value=(!is_null($string)) ? trim($string)) : '';
+			$o->value=self::safe_trim($string);
 			break;
 		case 'strip_tags':
 			array_shift($o->pieces);
@@ -4611,7 +4131,7 @@ static function d(){
 static function env_key_exists($keys){
 	//php8ok	
 	$current=self::$stack;		
-	if(!is_array($keys))$keys=explode('.',$keys);	
+	if(!is_array($keys))$keys=self::safe_explode('.',$keys);	
 	if($keys==='env')array_shift($keys);
 
 	while(!empty($keys)){
@@ -4745,10 +4265,11 @@ static function get_collection($collection){
 	$connection_arr=self::$stack['code_connections'][$collection['connection']];
 	
 	$connection_service = '\\aw2\\'.$connection_arr['connection_service'].'\\collection\\get';
-		
+	
 	$atts['connection']=$collection['connection'];
 	$atts['post_type']=$collection['post_type'];
 	$modules = call_user_func($connection_service,$atts);
+
 	foreach ($modules as $key=>$value) {
 		$modules[$key]['collection']=$collection;
 	}
@@ -4767,7 +4288,7 @@ static function module_exists_in_collection($collection,$module){
 		$connection_service = '\\aw2\\'.$connection_arr['connection_service'].'\\module\\exists';
 
 		$atts['connection']=$collection['connection'];
-		$atts['post_type']=$collection['post_type'];
+		$atts['post_type']=isset($collection['post_type'])?$collection['post_type']:'';
 		$atts['module']=$module;
 
 		$arr = call_user_func($connection_service,$atts);
@@ -4783,7 +4304,7 @@ static function get_module_meta($collection,$module){
 		$connection_service = '\\aw2\\'.$connection_arr['connection_service'].'\\module\\meta';
 	
 		$atts['connection']=$collection['connection'];
-		$atts['post_type']=$collection['post_type'];
+		$atts['post_type']=isset($collection['post_type'])?$collection['post_type']:'';
 		$atts['module']=$module;
 
 		$arr = call_user_func($connection_service,$atts);
@@ -4817,54 +4338,6 @@ static function get_module($collection,$module){
 	}
 
 /*
-	if(isset($collection['app'])){
-		$post_type=self::$stack['apps'][$collection['app']]['collection']['modules']['post_type'];
-		
-		$hash=$post_type . '_' . $module;
-		$return_value=null;
-		//check cache
-		if(USE_ENV_CACHE){
-			$return_value=aw2\global_cache\get(["main"=>$hash,"prefix"=>"module"],null,null);
-		}
-		
-		if(!$return_value){
-			$sql="select post_content,post_type,ID,post_name,post_title from ".$table_prefix."posts where post_type='" . $post_type . "' and post_name='" . $module . "'";
-			$results =self::get_results($sql);		
-			
-			if(count($results)!==1)return null;
-			$arr=array();
-			$arr['module']=$results[0]['post_name'];
-			$arr['title']=$results[0]['post_title'];
-			$arr['id']=$results[0]['ID'];
-			$arr['code']=$results[0]['post_content'];
-			$arr['post_type']=$results[0]['post_type'];
-			
-			$arr['collection']=$collection;
-			$arr['hash']=$hash;		
-			if(SET_ENV_CACHE)aw2\global_cache\set(["key"=>$hash,"prefix"=>"module"],json_encode($arr),null);
-			if(defined('SET_DEBUG_CACHE') && SET_DEBUG_CACHE){
-				$fields = array('last_accessed'=>date('Y-m-d H:i:s'));
-				
-				aw2\debug_cache\set_access_post_type(["post_type"=>$arr['post_type'],"fields"=>$fields],'',null);
-				aw2\debug_cache\set_access_module(["post_type"=>$arr['post_type'],"module"=>$arr['module'],"fields"=>$fields],'',null);
-				
-				if(isset(self::$stack['app'][$collection['app']])){	
-					$app_slug = self::$stack['apps'][$collection['app']]['slug'];
-					$fields['app_name']= self::$stack['apps'][$collection['app']]['name'];
-					aw2\debug_cache\set_access_app(["app"=>$app_slug,"fields"=>$fields],'',null);
-					
-				}
-				unset($fields);
-			}	
-		}
-		else{
-			$arr=json_decode($return_value,true);
-		}
-		
-		return $arr;
-	}
-*/
-	
 	if(isset($collection['source'])){
 		$hash=$collection['source'] . '_' . $module;
 		$return_value=null;
@@ -4894,7 +4367,7 @@ static function get_module($collection,$module){
 		
 		return $arr;
 	}
-	
+*/	
 }
 
 
@@ -4934,6 +4407,11 @@ static function get_post_meta($post_id,$meta_key=null){
 		return $metas;
 }
 
+static function is_live_debug(){
+	//return true;
+	$status = (self::get('@live_debug.active') === 'yes')?true:false;
+	return $status;
+}
 static function module_push($arr){
 	//php8ok		
 	$stack_id='module:' .  $arr['hash'] . ':' . aw2_library::get_rand(6);
@@ -4955,46 +4433,48 @@ static function module_push($arr){
 	
 static function module_forced_run($collection,$module,$template,$content,$atts){
 	//php8ok		
+	if(self::is_live_debug()){
+		
+		$live_debug_event=array();
+		$live_debug_event['flow']='module';
+		$live_debug_event['action']='module.called';
+		$live_debug_event['stream']='module_forced_run';
+		$live_debug_event['hash']=(isset($collection['post_type'])?$collection['post_type']:'none') . ':' . $module;
+		$live_debug_event['module']=$module;
+		$live_debug_event['content']=$content;
+		$live_debug_event['atts']=$atts;
+		$live_debug_event['template']=$template;
+		
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#DEB6AB']);
+	}
 	
 	$arr=self::get_module($collection,$module);
 	if(!$arr){
-		$html=self::dump_debug(
-		[
-			[
-				'type'=>'html',
-				'value'	=>"Module:: $module"
-			],
-			[
-				'type'=>'html',
-				'value'	=>"Template:: $template"
-			],
-			[
-				'type'=>'html',
-				'value'	=>"Collection Array"
-			],
-			[
-				'type'=>'arr',
-				'value'	=>$collection
-			],
-			[
-				'type'=>'html',
-				'value'	=>'Stack Array'
-			],
-			[
-				'type'=>'stack',
-				'value'	=>self::get_array_ref('call_stack')
-			]
-		]		
-		,
-		"Module not found (module_forced_run)"
-		);
+		if(self::is_live_debug()){
+			$live_debug_event['action']='module.not_found';
+			$temp_debug=$live_debug_event;
+			$temp_debug['error']='yes';
+			$temp_debug['error_type']='missing_asset';
+			\aw2\live_debug\publish_event(['event'=>$temp_debug,'bgcolor'=>'#F0EBE3']);
+		}
 		
-		if(AWESOME_DEBUG)\aw2\debugbar\html(['value'=>$html,'tab'=>'error']);			
 		return "$module Module not found " . self::convert_name_value_string($collection);
 	}	
-	//echo 'module::' . $module . 'collection:: ' . $collection['post_type'] . '<br />';
 
+	if(self::is_live_debug()){
+		$live_debug_event['action']='module.found';
+		$live_debug_event['code']=substr(print_r($arr['code'], true),0,500);
+
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#E4DCCF']);
+	}
+	
 	$stack_id=self::module_push($arr);
+
+	if(self::is_live_debug()){
+		$live_debug_event['action']='module.loaded';
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#C4DFAA']);
+	}
+
 	
 	$sc_exec=&self::get_array_ref('@sc_exec');
 	$restore=$sc_exec;	
@@ -5007,20 +4487,53 @@ static function module_forced_run($collection,$module,$template,$content,$atts){
 	}
 	self::push_this($stack_id);
 	self::push_atts($stack_id,$atts);
+	
+	if(self::is_live_debug()){
+		$live_debug_event['action']='module.code.executing';
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#F5F0BB']);
+	}
+	
 	$return_value=self::parse_shortcode($arr['code']);
+
+	if(self::is_live_debug()){
+		$live_debug_event['action']='module.code.executed';
+		$live_debug_event['code_result']=substr(print_r($return_value, true),0,500);
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#F7ECDE']);
+	}
+	
 	if(isset(self::$stack['module']['templates']['main']) && !$template){
 		$template='main';
+		if(self::is_live_debug()){
+			$live_debug_event['template_main']='yes';
+		}		
 	}
 	if($template)$return_value=self::template_run($template);
+
+	if(self::is_live_debug()){
+		$live_debug_event['action']='module.template.executed';
+		$live_debug_event['template_result']=substr(print_r($return_value, true),0,500);
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#FBF8F1']);
+	}
+
 	
 	if(isset(self::$stack['module']['_return'])){
 		unset(self::$stack['_return']);
 		$return_value=self::$stack['module']['_return'];
 	}
 
-	if(AWESOME_DEBUG)\aw2\debug\module(['start'=>$start,'template'=>$template]);	
+	if(self::is_live_debug()){
+		$live_debug_event['action']='module.done';
+		$live_debug_event['module_result']=substr(print_r($return_value, true),0,500);
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#ECE5C7']);
+	}
 
 	aw2_library::pop_child($stack_id);
+
+	if(self::is_live_debug()){
+		$live_debug_event['action']='module.unloaded';
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#CDC2AE']);
+	}
+
 
 	$sc_exec=&self::get_array_ref('@sc_exec');
 	$sc_exec=$restore;
@@ -5030,6 +4543,25 @@ static function module_forced_run($collection,$module,$template,$content,$atts){
 
 
 static function module_run($collection,$module,$template=null,$content=null,$atts=null){
+
+	if(self::is_live_debug()){
+		
+		$live_debug_event=array();
+		$live_debug_event['flow']='module';
+		$live_debug_event['action']='module.called';
+		$live_debug_event['stream']='module_run';
+		$live_debug_event['hash']=(isset($collection['post_type'])?$collection['post_type']:'none') . ':' . $module;
+		$live_debug_event['module']=$module;
+		$live_debug_event['collection']=$collection;
+		$live_debug_event['connection']=(isset($collection['connection'])?$collection['connection']:'none');
+		$live_debug_event['post_type']=(isset($collection['post_type'])?$collection['post_type']:'none');
+		$live_debug_event['content']=$content;
+		$live_debug_event['atts']=$atts;
+		$live_debug_event['template']=$template;
+		
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#DEB6AB']);
+	}
+
 	//php8ok		
 	$arr=self::get_module($collection,$module);
 	
@@ -5043,50 +4575,33 @@ static function module_run($collection,$module,$template=null,$content=null,$att
 	*/ 
 	
 	if(!$arr){
-		$html=self::dump_debug(
-		[
-			[
-				'type'=>'html',
-				'value'	=>"Module:: $module"
-			],
-			[
-				'type'=>'html',
-				'value'	=>"Template:: $template"
-			],
-			[
-				'type'=>'html',
-				'value'	=>"Collection Array"
-			],
-			[
-				'type'=>'arr',
-				'value'	=>$collection
-			],
-			[
-				'type'=>'html',
-				'value'	=>'Stack Array'
-			],
-			[
-				'type'=>'stack',
-				'value'	=>self::get_array_ref('call_stack')
-			]
-		]		
-		,
-		"Module not found (module_run)"
-		);
 		
-		if(AWESOME_DEBUG)\aw2\debugbar\html(['value'=>$html,'tab'=>'error']);
-		
+		if(self::is_live_debug()){
+			$live_debug_event['action']='module.not_found';
+			$temp_debug=$live_debug_event;
+			$temp_debug['error']='yes';
+			$temp_debug['error_type']='missing_asset';
+			\aw2\live_debug\publish_event(['event'=>$temp_debug,'bgcolor'=>'#F0EBE3']);
+		}
+	
 		return "$module Module not found " . self::convert_name_value_string($collection);
 	}
 
-	if(defined('AWESOME_LOG_USAGE') && AWESOME_LOG_USAGE == "yes"){
-		require_once('usage_log.php');
-		$log = aw2_usage_log::log_usage($collection, $module);
+	if(self::is_live_debug()){
+		$live_debug_event['action']='module.found';
+		$live_debug_event['code']=substr(print_r($arr['code'], true),0,5000);
+
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#E4DCCF']);
 	}
 
-	//echo 'module::' . $module . 'collection:: ' . $collection['post_type'] . '<br />';
+
 	$stack_id=self::module_push($arr);
 	
+	
+	if(self::is_live_debug()){
+		$live_debug_event['action']='module.loaded';
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#C4DFAA']);
+	}
 	
 	$sc_exec=&self::get_array_ref('@sc_exec');
 	$restore=$sc_exec;	
@@ -5103,26 +4618,64 @@ static function module_run($collection,$module,$template=null,$content=null,$att
 		self::push_atts($stack_id,$atts);
 	}
 
+	if(self::is_live_debug()){
+		$live_debug_event['action']='module.code.executing';
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#F5F0BB']);
+	}
+
+
+
 	$return_value='';
 	if(isset($arr['code'])){
 	   $return_value=self::parse_shortcode($arr['code']);
 	}
+	
+
+	if(self::is_live_debug()){
+		$live_debug_event['action']='module.code.executed';
+		$live_debug_event['code_result']=substr(print_r($return_value, true),0,500);
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#F7ECDE']);
+	}
+
+
 
 	if(isset(self::$stack['module']['templates']['main']) && !$template){
+
+		if(self::is_live_debug()){
+			$live_debug_event['template_main']='yes';
+		}
+
 		$return_value=self::template_run('main');
 	}
 	
 	if($template)$return_value=self::template_run($template,$content,$atts);
-	
+
+	if(self::is_live_debug()){
+		$live_debug_event['action']='module.template.executed';
+		$live_debug_event['template_result']=substr(print_r($return_value, true),0,500);
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#FBF8F1']);
+	}
+
+
+
 	if(isset(self::$stack['module']['_return'])){
 		unset(self::$stack['_return']);
 		$return_value=self::$stack['module']['_return'];
 	}
 
-	if(AWESOME_DEBUG)\aw2\debug\module(['start'=>$start,'template'=>$template]);	
-	
+	if(self::is_live_debug()){
+		$live_debug_event['action']='module.done';
+		$live_debug_event['module_result']=substr(print_r($return_value, true),0,500);
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#ECE5C7']);
+	}
+
 	aw2_library::pop_child($stack_id);
-	
+
+	if(self::is_live_debug()){
+		$live_debug_event['action']='module.unloaded';
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#CDC2AE']);
+	}
+
 	$sc_exec=&self::get_array_ref('@sc_exec');
 	$sc_exec=$restore;	
 	
@@ -5145,7 +4698,17 @@ static function service_template_run($template,$atts=array()){
 		
 
 	
-	$return_value=self::parse_shortcode($template['code']);
+	$template_type='aw2_code';
+	if(isset($template_ptr['template_type']))$template_type=$template_ptr['template_type'];
+	
+	if($template_type==='aw2_arr'){
+		$return_value=\aw2\arr\create(array(),$template['code']);
+	}
+
+	if($template_type==='aw2_code'){
+		$return_value=self::parse_shortcode($template['code']);
+	}
+	
 	if(isset(self::$stack['template']['_return'])){
 		unset(self::$stack['_return']);
 		$return_value=self::$stack['template']['_return'];
@@ -5160,10 +4723,43 @@ static function service_template_run($template,$atts=array()){
 
 static function template_run($template,$content=null,$atts=array()){
 	//php8ok		
+	if(self::is_live_debug()){
+		
+		$live_debug_event=array();
+		$live_debug_event['flow']='template';
+		$live_debug_event['action']='template.called';
+		$live_debug_event['stream']='template_run';
+		
+		$tmodule=self::get('module');
+		$live_debug_event['post_type']=(isset($tmodule['collection']['post_type'])?$tmodule['collection']['post_type']:'');
+		$live_debug_event['module']=$tmodule;
+		$live_debug_event['template']=$template;
+		$live_debug_event['atts']=$atts;
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#DEB6AB']);
+	}
+	
 	$content=self::removesmartquotes($content);		
-	if(!isset(self::$stack['module']['templates'][$template]))return 'Template not found - '.$template ;
+	if(!isset(self::$stack['module']['templates'][$template])){
+		if(self::is_live_debug()){
+			$live_debug_event['action']='template.not_found';
+			$temp_debug=$live_debug_event;
+			$temp_debug['error']='yes';
+			$temp_debug['error_type']='missing_asset';
+			$temp_debug['templates']=self::$stack['module'];
+
+			\aw2\live_debug\publish_event(['event'=>$temp_debug,'bgcolor'=>'#F0EBE3']);
+		}
+		return 'Template not found - '.$template ;
+		
+	}
 	$template_ptr=self::$stack['module']['templates'][$template];
 	$stack_id=self::push_child('template',$template_ptr['name']);
+
+	if(self::is_live_debug()){
+		$live_debug_event['action']='template.loaded';
+		$live_debug_event['code']=substr(print_r($template_ptr['code'], true),0,5000);
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#C4DFAA']);
+	}
 	
 	if($content)self::parse_shortcode($content);
 	self::push_this($stack_id);
@@ -5177,7 +4773,23 @@ static function template_run($template,$content=null,$atts=array()){
 	
 	
 	
-	$return_value=self::parse_shortcode($template_ptr['code']);
+	$template_type='aw2_code';
+	if(isset($template_ptr['template_type']))$template_type=$template_ptr['template_type'];
+	
+	if($template_type==='aw2_arr'){
+		$return_value=\aw2\arr\create(array(),$template_ptr['code']);
+	}
+
+	if($template_type==='aw2_code'){
+		$return_value=self::parse_shortcode($template_ptr['code']);
+	}
+
+	if(self::is_live_debug()){
+		$live_debug_event['action']='template.code.executed';
+		$live_debug_event['code_result']=substr(print_r($return_value, true),0,500);
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#F7ECDE']);
+	}
+
 	
 	if(isset($template_ptr['content_pos'])){
 		$sc_exec=&self::get_array_ref('@sc_exec');
@@ -5189,55 +4801,155 @@ static function template_run($template,$content=null,$atts=array()){
 		unset(self::$stack['_return']);
 		$return_value=self::$stack['template']['_return'];
 	}
+
+
+	
+	if(self::is_live_debug()){
+		$live_debug_event['action']='template.done';
+		$live_debug_event['template_result']=substr(print_r($return_value, true),0,500);
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#ECE5C7']);
+	}
+
+	
 	aw2_library::pop_child($stack_id);
+	
+	if(self::is_live_debug()){
+		$live_debug_event['action']='template.unloaded';
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#CDC2AE']);
+	}
+	
+	return $return_value;	
+}
+
+static function template_anon_run($template_content,$content=null,$atts=array()){
+	//php8ok
+	
+	if(self::is_live_debug()){
+		
+		$live_debug_event=array();
+		$live_debug_event['flow']='template';
+		$live_debug_event['action']='template.called';
+		$live_debug_event['stream']='template_anon_run';
+		
+		$live_debug_event['template']=$template_content;
+		$live_debug_event['atts']=$atts;
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event]);
+	}
+	
+	$content=self::removesmartquotes($content);		
+	
+	$template_ptr=array();
+	$template_ptr['name']='anon';
+	$template_ptr['code']=$template_content;
+	
+	$stack_id=self::push_child('template',$template_ptr['name']);
+
+	if(self::is_live_debug()){
+		$live_debug_event['action']='template.loaded';
+		$live_debug_event['code']=substr(print_r($template_ptr['code'], true),0,5000);
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#C4DFAA']);
+	}
+	
+	if($content)self::parse_shortcode($content);
+	self::push_this($stack_id);
+	self::push_atts($stack_id,$atts);
+
+	$return_value=self::parse_shortcode($template_ptr['code']);
+
+	if(self::is_live_debug()){
+		$live_debug_event['action']='template.code.executed';
+		$live_debug_event['code_result']=substr(print_r($return_value, true),0,500);
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#F7ECDE']);
+	}
+
+
+	
+	if(isset(self::$stack['template']['_return'])){
+		unset(self::$stack['_return']);
+		$return_value=self::$stack['template']['_return'];
+	}
+	
+	if(self::is_live_debug()){
+		$live_debug_event['action']='template.done';
+		$live_debug_event['template_result']=substr(print_r($return_value, true),0,500);
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#ECE5C7']);
+	}
+
+	aw2_library::pop_child($stack_id);
+	
+	if(self::is_live_debug()){
+		$live_debug_event['action']='template.unloaded';
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#CDC2AE']);
+	}
+	
 	return $return_value;	
 }
 
 static function module_include($collection,$module){
 	//php8ok		
+	if(self::is_live_debug()){
+		
+		$live_debug_event=array();
+		$live_debug_event['flow']='module';
+		$live_debug_event['action']='module.called';
+		$live_debug_event['stream']='module_include';
+		$live_debug_event['hash']=(isset($collection['post_type'])?$collection['post_type']:'none') . ':' . $module;
+		$live_debug_event['module']=$module;
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#DEB6AB']);
+	}
+	
 	$arr=self::get_module($collection,$module);
 		if(!$arr){
-			$html=self::dump_debug(
-			[
-				[
-					'type'=>'html',
-					'value'	=>"Module:: $module"
-				],
-				[
-					'type'=>'html',
-					'value'	=>"Collection Array"
-				],
-				[
-					'type'=>'arr',
-					'value'	=>$collection
-				],
-				[
-					'type'=>'html',
-					'value'	=>'Stack Array'
-				],
-				[
-					'type'=>'stack',
-					'value'	=>self::get_array_ref('call_stack')
-				]
-			]		
-			,
-			"Module not found (module_include)"
-			);
-			
-			if(AWESOME_DEBUG)\aw2\debugbar\html(['value'=>$html,'tab'=>'error']);			
+			if(self::is_live_debug()){
+				$live_debug_event['action']='module.not_found';
+				$temp_debug=$live_debug_event;
+				$temp_debug['error']='yes';
+				$temp_debug['error_type']='missing_asset';
+				\aw2\live_debug\publish_event(['event'=>$temp_debug,'bgcolor'=>'#F0EBE3']);
+			}
 			return "$module Module not found " . self::convert_name_value_string($collection);
 		}	
 		
 		//echo 'module::' . $module . 'collection:: ' . $collection['post_type'] . '<br />';
 	$return_value='';
+
+	if(self::is_live_debug()){
+		$live_debug_event['action']='module.found';
+		$live_debug_event['code']=substr(print_r($arr['code'], true),0,5000);
+
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#E4DCCF']);
+	}
+	
+	if(self::is_live_debug()){
+		$live_debug_event['action']='module.code.executing';
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#F5F0BB']);
+	}
+	
 	if(isset($arr['code'])){
 		$return_value=self::parse_shortcode($arr['code']);
 	}
-		
+
+	if(self::is_live_debug()){
+		$live_debug_event['action']='module.done';
+		$live_debug_event['module_result']=substr(print_r($return_value, true),0,500);
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#ECE5C7']);
+	}
+	
 	return $return_value;	
 }
 
 static function module_include_raw($collection,$module){
+	if(self::is_live_debug()){
+		
+		$live_debug_event=array();
+		$live_debug_event['flow']='module';
+		$live_debug_event['action']='module.called';
+		$live_debug_event['stream']='module_include_raw';
+		$live_debug_event['hash']=(isset($collection['post_type'])?$collection['post_type']:'none') . ':' . $module;
+		$live_debug_event['module']=$module;
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event]);
+	}
+
 	//php8ok	
 	$arr=self::get_module($collection,$module);
 		if(!$arr)return "$module Module not found " . self::convert_name_value_string($collection);
@@ -5263,6 +4975,8 @@ static function load_content_type($field){
 
 
 static function setup_develop_for_awesomeui(){
+	//deprecated
+	return;
 	//php8ok
 	//Are you a developer. A developer has certain priveleges
 	//setup DEVELOP_FOR_AWESOMEUI
@@ -5287,7 +5001,8 @@ static function setup_env_cache($key){
 	// SET_ENV_CACHE - Whether to Set the Env Cache or not
 
 	define('ENV_CACHE', $key);
-
+	return;
+	//rest of the code is deprecated
 	/*
 	DEVELOP_FOR_AWESOMEUI can use the env cache. This allows him to not have to load cache unnecessarily and also test with cache on
 	*/
@@ -5299,9 +5014,7 @@ static function setup_env_cache($key){
 	}
 	else{
 		if(isset($_COOKIE['use_env_cache']) && $_COOKIE['use_env_cache']==='no')
-			define('USE_ENV_CACHE', false);	
-		else
-			define('USE_ENV_CACHE', true);	
+			define('USE_ENV_CACHE', false);
 	}
 
 	if(isset($_REQUEST['use_env_cache']) && $_REQUEST['use_env_cache']==='delete_cookie'){
@@ -5316,17 +5029,6 @@ static function setup_env_cache($key){
 		define('DEL_ENV_CACHE', false);	
 
 		
-	//should we set cache or not 
-	/*
-	DEVELOP_FOR_AWESOMEUI cannot Set the Env Cache because he may have corrupted the environment 
-	If you are not Using the Cache then you cannot setup the cache either
-	*/
-	if(DEVELOP_FOR_AWESOMEUI || !USE_ENV_CACHE)
-		define('SET_ENV_CACHE', false);
-	else
-		define('SET_ENV_CACHE', true); 	
-
-	
 }
 
 
@@ -5356,6 +5058,25 @@ static function redirect($location,$status=302){
 	return wp_redirect($location,$status);
 }
 
+static function safe_explode($separator, $string_value){
+	if(is_null($string_value))
+		$string_value = (string) $string_value;
+
+	return explode($separator, $string_value);	
+}
+static function safe_trim($string_value){
+	if(is_null($string_value))
+		$string_value = (string) $string_value;
+		
+	return trim($string_value);
+}
+static function safe_ltrim($string_value){
+	if(is_null($string_value))
+		$string_value = (string) $string_value;
+
+	return ltrim($string_value);
+}
+	
 }
 
 
@@ -5366,313 +5087,377 @@ public $arr=array();
 public $ptr=null;
 public $is_api=false;
 //public $ctr=0;
-
-public function parse($str){
 	
-	$this->str=$str;
-	
-	while (!ctype_space($this->str) && $this->str!=='') {
-		//$this->ctr++;
-		//d('counter',$this->ctr); 
-		//if($this->ctr>=50)die();
-		if(empty($this->stack)){
-			$this->next_element();
-		}
-		else{
-			$this->within_element();
-
-		}
-	}
-	if(!empty($this->stack)){
-		echo '<br>You have nodes which have not been completed: ';
-		util::var_dump($this->stack);
-		return '';
-	}
-	return $this->arr;
-}	
-
-private function next_element(){
-	//$pattern = '/\s*\[([a-zA-Z].*?)(\/]|])/';
-	
-	$pattern = '/\s*\[([a-zA-Z0-9_\-@]*(?:(?:\s*)|(?:\s.*?)))(\/]|])/';
-	// <whitespace>[<atleast one character><any thing lazy>(optional /)] 
-	$reply=preg_match($pattern, $this->str, $match,PREG_OFFSET_CAPTURE);
-
-	
-	if(!$reply){
-		echo '<br>Remaining String.' . $this->str;
-		echo '<br>No elements found in the above string.';
-		die();
-	}
-	$text=$match[1][0];	
-	
-	$state=$match[2][0];
-	$next_char= strlen($match[2][0]) + $match[2][1];	
-	$this->str=substr($this->str,$next_char);
-
-	$this->new_node($text,$state);
-}
-
-//Extract all the attributes of the node
-private function new_node($text,$state){
-	$atts=array();
-	$pattern = '/([-a-zA-Z0-9_.]+)\s*=\s*"([^"]*)"(?:\s|$)|([-a-zA-Z0-9_.]+)\s*=\s*\'([^\']*)\'(?:\s|$)|([-a-zA-Z0-9_.]+)\s*=\s*([^\s\'"]+)(?:\s|$)|"([^"]*)"(?:\s|$)|(\S+)(?:\s|$)/';
-	
-	$reply=preg_match_all($pattern, $text, $match, PREG_SET_ORDER);
-	if(!$reply){
-		echo '<br>Remaining String.' . $this->str;
-		echo '<br>The string being parsed: ' . $text;
-		echo '<br>. Something is wrong with the above text';
-		die();
-	}
-	
-	//extract all the attributes
-	
-	foreach ($match as $m) {
-		if (!empty($m[1]))
-			$atts[strtolower($m[1])] = stripcslashes($m[2]);
-		elseif (!empty($m[3]))
-			$atts[strtolower($m[3])] = stripcslashes($m[4]);
-		elseif (!empty($m[5]))
-			$atts[strtolower($m[5])] = stripcslashes($m[6]);
-		elseif (isset($m[7]) && strlen($m[7]))
-			$atts[] = stripcslashes($m[7]);
-		elseif (isset($m[8]))
-			$atts[] = stripcslashes($m[8]);
-	}
-	//decide the name of the item
-	$item_name=$atts[0]; 
-	unset($atts[0]);
-	
-	//pre actions - the type attribute will now be main
-	//if(aw2_library::pre_actions('all',$atts,$content,$shortcode)==false)return;
-	
-	aw2_library::pre_action_parse($atts);
-	$reply=aw2_library::checkcondition($atts);
-	//decide whether we want to keep this node
-	if($reply==false){
-		//we dont want to keep this node
-		if ($state=='/]'){
-			//it is a self closing node
-			return;
-		}
-			//open node
-		$this->remove_named_node($item_name);
-		return;
-	}
-	
-	//decide where the array will go
-	$last_node=end($this->stack);
-	if($last_node)
-		$ptr=&$last_node->ptr;
-	else
-		$ptr=&$this->arr; 
-
-
+	public function parse($str){
 		
-	
-	//it is do. It has to be executed
-	if($item_name=='do'){
+		$this->str=$str;
 		
-
-		$pattern = '/^((?s:.*?))(\[\/do\])/';
+		while (!ctype_space($this->str) && $this->str!=='') {
+			//$this->ctr++;
+			//d('counter',$this->ctr); 
+			//if($this->ctr>=50)die();
+			if(empty($this->stack)){
+				$this->next_element();
+			}
+			else{
+				$this->within_element();
+	
+			}
+		}
+		if(!empty($this->stack)){
+			echo '<br>You have nodes which have not been completed: ';
+			util::var_dump($this->stack);
+			return '';
+		}
+		return $this->arr;
+	}	
+	
+	private function next_element(){
+		//$pattern = '/\s*\[([a-zA-Z].*?)(\/]|])/';
+		
+		$pattern = '/\s*\[([a-zA-Z0-9_\-@]*(?:(?:\s*)|(?:\s.*?)))(\/]|])/s';
+		// <whitespace>[<atleast one character><any thing lazy>(optional /)] 
 		$reply=preg_match($pattern, $this->str, $match,PREG_OFFSET_CAPTURE);
+	
+		
 		if(!$reply){
 			echo '<br>Remaining String.' . $this->str;
-			echo '<br>. Something is wrong. A do was not closed';
+			echo '<br>No elements found in the above string.';
 			die();
 		}
-		$do=$match[1][0];
+		$text=$match[1][0];	
+		
+		$state=$match[2][0];
 		$next_char= strlen($match[2][0]) + $match[2][1];	
 		$this->str=substr($this->str,$next_char);
-		$result=aw2_library::parse_shortcode($do);
+	
+		$this->new_node($text,$state);
+	}
 
-		if(array_key_exists('_return',aw2_library::$stack)){
-			$result=aw2_library::$stack['_return'];
-			unset(aw2_library::$stack['_return']);
+	//Extract all the attributes of the node
+	private function new_node($text,$state){
+		//delhi name='Delhi' country='India' gets the full node including 
+		$atts=array();
+		$pattern = '/([-a-zA-Z0-9_.:@]+)\s*=\s*"([^"]*)"(?:\s|$)|([-a-zA-Z0-9_.:@]+)\s*=\s*\'([^\']*)\'(?:\s|$)|([-a-zA-Z0-9_.:@]+)\s*=\s*([^\s\'"]+)(?:\s|$)|"([^"]*)"(?:\s|$)|(\S+)(?:\s|$)/';
+		
+		$reply=preg_match_all($pattern, $text, $match, PREG_SET_ORDER);
+		if(!$reply){
+			echo '<br>Remaining String.' . $this->str;
+			echo '<br>The string being parsed: ' . $text;
+			echo '<br>. Something is wrong with the above text';
+			die();
+		}
+		
+		//extract all the attributes
+		
+		foreach ($match as $m) {
+			if (!empty($m[1]))
+				$atts[strtolower($m[1])] = stripcslashes($m[2]);
+			elseif (!empty($m[3]))
+				$atts[strtolower($m[3])] = stripcslashes($m[4]);
+			elseif (!empty($m[5]))
+				$atts[strtolower($m[5])] = stripcslashes($m[6]);
+			elseif (isset($m[7]) && strlen($m[7]))
+				$atts[] = stripcslashes($m[7]);
+			elseif (isset($m[8]))
+				$atts[] = stripcslashes($m[8]);
+		}
+		//decide the name of the item
+		$item_name=$atts[0]; 
+		unset($atts[0]);
+		
+		//pre actions - the type attribute will now be main
+		//if(aw2_library::pre_actions('all',$atts,$content,$shortcode)==false)return;
+		
+		\aw2_library::pre_action_parse($atts);
+
+		$reply=aw2_library::checkcondition($atts);
+		//decide whether we want to keep this node
+		if($reply===true){
+			$pre_compiler_check = array('when');
+			$pre = array();
+			$service_atts = array();
+			
+			if (!empty($atts)) {
+				foreach ($atts as $key => $value) {
+					$pre_key = \aw2_library::safe_explode(':', $key);
+					
+					if (count($pre_key) > 1 && in_array($pre_key[0], $pre_compiler_check)) {
+						$pre[$pre_key[0]][$pre_key[1]] = $value;
+					} else {
+						$service_atts[$key] = $value;
+					}
+				}
+			}
+
+			if(isset($pre['when']))$reply=\aw2\when_colon\when_check($pre['when']);
+			
+			$atts=$service_atts;
 		}
 	
-		if(is_array($result)){
-			if(!is_array($ptr))$ptr=array();
+	
+		if($reply===false){
+			//we dont want to keep this node
+			if ($state=='/]'){
+				//it is a self closing node
+				return;
+			}
+				//open node
+			$this->remove_named_node($item_name);
+			return;
+		}
 
-			foreach ($result as $key => $value) {
-				if(array_key_exists($key,$ptr) &&  is_array($ptr[$key])){
-					$ptr[$key]=array_merge($ptr[$key],$value);
+		
+		//decide where the array will go
+		$last_node=end($this->stack);
+		if($last_node)
+			$ptr=&$last_node->ptr;
+		else
+			$ptr=&$this->arr; 
+	
+	
+			
+		
+		//it is do. It has to be executed
+		//item name is the name of the node it is do. It has to be executed
+		if($item_name=='do' || $item_name=='@do' || $item_name=='@do2'){
+			
+	
+			//$pattern = '/^((?s:.*?))(\[\/do\])/';
+			$pattern = '/^((?s:.*?))(\[\/' .$item_name . '\])/';
+			
+			$reply=preg_match($pattern, $this->str, $match,PREG_OFFSET_CAPTURE);
+			if(!$reply){
+				echo '<br>Remaining String.' . $this->str;
+				echo '<br>. Something is wrong. A do was not closed';
+				die();
+			}
+			$do=$match[1][0];
+			$next_char= strlen($match[2][0]) + $match[2][1];	
+			$this->str=substr($this->str,$next_char);
+			$result=aw2_library::parse_shortcode($do);
+	
+			if(array_key_exists('_return',aw2_library::$stack)){
+				$result=aw2_library::$stack['_return'];
+				unset(aw2_library::$stack['_return']);
+			}
+		
+			if(is_array($result)){
+				if(!is_array($ptr))$ptr=array();
+	
+				foreach ($result as $key => $value) {
+					if(array_key_exists($key,$ptr) &&  is_array($ptr[$key])){
+						$ptr[$key]=array_merge($ptr[$key],$value);
+					}
+					else	
+						$ptr[$key]=$value;
 				}
-				else	
+			}
+			else
+				$this->str=$result . $this->str ;
+	
+			return;
+		}
+	
+		
+		if(!is_array($ptr))$ptr=array();
+		$raw=false;			
+		
+		/*
+			[steps next=ab]
+		*/
+		if($item_name!='atts'){
+			
+			if($item_name==='@new'){
+				$ptr[]=null;
+			}
+			elseif($item_name==='@key'){
+				$ptr[$atts['main']]=null;
+				unset($atts['main']);			
+			}		
+			elseif($item_name==='@key2'){
+				$ptr[$atts['main']]=null;
+				unset($atts['main']);			
+			}		
+			elseif(!array_key_exists($item_name,$ptr))
+			{
+				$ptr[$item_name]=null;
+				//previous node [steps]=null
+			}
+			end($ptr); 
+			//will give key of last item
+			$ptr=&$ptr[key($ptr)];		
+	
+			//$ptr=&$ptr[$item_name];
+			//point to steps
+			
+			
+			//[steps new ...] or [steps raw ...] 
+			
+			if(array_key_exists('main',$atts)){
+				$type=$atts['main'];
+				unset($atts['main']);
+				
+				if($type=='raw'){
+					$raw=true;
+				}
+				else{
+					switch ($type) {
+						case 'new':
+							/*
+								[steps new ...]
+								Already pointing to steps 
+								steps[]=null
+								point to the new node as it will be last node
+							*/
+							$ptr[]=null;
+							break;
+						default:
+							/*
+								[steps hello ...]
+								Already pointing to steps 
+								steps[hello]=null
+								point to the new node as it will be last node
+							*/
+							$ptr[$type]=null;
+							break;
+					}
+					end($ptr); 
+					//will give key of last item
+					$ptr=&$ptr[key($ptr)];
+				}
+			}	
+		}
+		
+		if(!empty($atts)){
+			foreach ($atts as $key => $value) {
+				if($key==='_value'){
+					$ptr=null;
+					$ptr=$value;
+				}
+				else		
 					$ptr[$key]=$value;
 			}
 		}
-		else
-			$this->str=$result . $this->str ;
-
-		return;
-	}
-
-	
-	if(!is_array($ptr))$ptr=array();
-	$raw=false;			
-	
-	
-	if($item_name!='atts'){
-		if(!array_key_exists($item_name,$ptr)){
-			$ptr[$item_name]=null;
-		}	
-		$ptr=&$ptr[$item_name];
 		
-		if(array_key_exists('main',$atts)){
-			$type=$atts['main'];
-			unset($atts['main']);
+		if($state==']'){
+			$o=new stdClass();
+			$o->element_type='OPEN';
+			$o->element_name=$item_name;
+			$o->ptr=&$ptr;
+			$o->raw=$raw;
 			
-			if($type=='raw'){
-				$raw=true;
-			}
-			else{
-				switch ($type) {
-					case 'new':
-						$ptr[]=null;
-						break;
-					default:
-						$ptr[$type]=null;
-						break;
-				}
-				end($ptr); 
-				$ptr=&$ptr[key($ptr)];
-			}
-		}	
-	}
-
-	if(!empty($atts)){
-		foreach ($atts as $key => $value) {
-			if($key==='_value'){
-				$ptr=null;
-				$ptr=$value;
-			}
-			else		
-				$ptr[$key]=$value;
+			$this->stack[]=$o;
 		}
+		
 	}
 	
-	if($state==']'){
-		$o=new stdClass();
-		$o->element_type='OPEN';
-		$o->element_name=$item_name;
-		$o->ptr=&$ptr;
-		$o->raw=$raw;
-		
-		$this->stack[]=$o;
-	}
 	
-}
-
-
-private function within_element(){
-	$last_node=end($this->stack);
-	$name=$last_node->element_name;
-	
-	if($last_node->raw){
+	private function within_element(){
+		$last_node=end($this->stack);
+		$name=$last_node->element_name;
 		
-		$pattern = '/((?s:.*?))(\[\/' . $name . '\])/';
+		if($last_node->raw){
+			
+			$pattern = '/((?s:.*?))(\[\/' . $name . '\])/';
+			$reply=preg_match($pattern, $this->str, $match,PREG_OFFSET_CAPTURE);
+			if(!$reply){
+				echo '<br>Remaining String.' . $this->str;
+				echo '<br>Raw element was started but not ended';
+				echo '<br>' . $name ;
+				die();
+			}
+			$next_char= strlen($match[2][0]) + $match[2][1];	
+			$this->str=substr($this->str,$next_char);		
+			$last_node->ptr=$match[1][0];
+			array_pop($this->stack);
+			return;
+		}
+		
+		//$pattern = '/^(?:\s*\[raw\]((?s:.*?))\[\/raw\]\s*(\[\/' . $name .'\]))|(?:\s*\[([a-zA-Z].*?)(\/]|]))|(?s:(.*?)(\[\/' . $name .'\]))/s';	
+			$pattern = '/^(?:\s*\[raw\]((?s:.*?))\[\/raw\]\s*(\[\/' . $name .'\]))|\s*\[([a-zA-Z0-9_\-@]*(?:(?:\s*)|(?:\s.*?)))(\/]|])|(?s:(.*?)(\[\/' . $name .'\]))/s';	
 		$reply=preg_match($pattern, $this->str, $match,PREG_OFFSET_CAPTURE);
 		if(!$reply){
 			echo '<br>Remaining String.' . $this->str;
-			echo '<br>Raw element was started but not ended';
+			echo '<br>Something went wrong within the content of the element';
 			echo '<br>' . $name ;
+			
 			die();
 		}
-		$next_char= strlen($match[2][0]) + $match[2][1];	
-		$this->str=substr($this->str,$next_char);		
-		$last_node->ptr=$match[1][0];
-		array_pop($this->stack);
-		return;
-	}
 	
-	//$pattern = '/^(?:\s*\[raw\]((?s:.*?))\[\/raw\]\s*(\[\/' . $name .'\]))|(?:\s*\[([a-zA-Z].*?)(\/]|]))|(?s:(.*?)(\[\/' . $name .'\]))/s';	
-		$pattern = '/^(?:\s*\[raw\]((?s:.*?))\[\/raw\]\s*(\[\/' . $name .'\]))|\s*\[([a-zA-Z0-9_\-@]*(?:(?:\s*)|(?:\s.*?)))(\/]|])|(?s:(.*?)(\[\/' . $name .'\]))/s';	
-	$reply=preg_match($pattern, $this->str, $match,PREG_OFFSET_CAPTURE);
-	if(!$reply){
-		echo '<br>Remaining String.' . $this->str;
-		echo '<br>Something went wrong within the content of the element';
-		echo '<br>' . $name ;
-		
-		die();
-	}
-
-	//there is a raw node
-	if(!empty($match[2][0])){
-		$last_node=end($this->stack);
-		if(is_array($last_node->ptr))
-			;
-		else	
-			$last_node->ptr=$match[1][0];
-		
-		$next_char= strlen($match[2][0]) + $match[2][1];	
-		$this->str=substr($this->str,$next_char);
-		array_pop($this->stack);
-	}
-	
-	//there is a child node
-	if(!empty($match[4][0])){
-		$next_char= strlen($match[4][0]) + $match[4][1];	
-		$this->str=substr($this->str,$next_char);
-		$this->new_node($match[3][0],$match[4][0]);
-	}
-	
-	//open node being closed
-	if(!empty($match[6][0])){
-		$last_node=end($this->stack);
-		if(is_array($last_node->ptr))
-			;
-		else{
-			$last_node->ptr=$match[5][0];
-			$pos = strrpos($last_node->ptr, "[");
-			if ($pos !== false)$last_node->ptr=aw2_library::parse_shortcode($last_node->ptr);
-		}	
-		$next_char= strlen($match[6][0]) + $match[6][1];	
-		$this->str=substr($this->str,$next_char);
-
-
-		array_pop($this->stack);
-	}
-}
-
-
-private function remove_named_node($item_name){
-	$flag=1;		
-
-	while ($flag>0) {
-		$match=$this->find_next_named_node($item_name);
-		if(!empty($match[1][0])){
-			//found a opening node
-			$flag=$flag + 1;
-			$next_char= strlen($match[1][0]) + $match[1][1];	
-			$this->str=substr($this->str,$next_char);
-		}
-		else{
-			//close was found
-			$flag=$flag - 1;
+		//there is a raw node
+		if(!empty($match[2][0])){
+			$last_node=end($this->stack);
+			if(is_array($last_node->ptr))
+				;
+			else	
+				$last_node->ptr=$match[1][0];
+			
 			$next_char= strlen($match[2][0]) + $match[2][1];	
 			$this->str=substr($this->str,$next_char);
-			if($flag==0)return;//found matching closing node
+			array_pop($this->stack);
+		}
+		
+		//there is a child node
+		if(!empty($match[4][0])){
+			$next_char= strlen($match[4][0]) + $match[4][1];	
+			$this->str=substr($this->str,$next_char);
+			$this->new_node($match[3][0],$match[4][0]);
+		}
+		
+		//open node being closed
+		if(!empty($match[6][0])){
+			$last_node=end($this->stack);
+			if(is_array($last_node->ptr))
+				;
+			else{
+				$last_node->ptr=$match[5][0];
+				$pos = strrpos($last_node->ptr, "[");
+				if ($pos !== false)$last_node->ptr=aw2_library::parse_shortcode($last_node->ptr);
+			}	
+			$next_char= strlen($match[6][0]) + $match[6][1];	
+			$this->str=substr($this->str,$next_char);
+	
+	
+			array_pop($this->stack);
 		}
 	}
-}
-
-private function find_next_named_node($item_name){
-	$pattern = '/((?:\[' . $item_name .'\s.*?])|(?:\[' . $item_name .'])|(?:\[' . $item_name .'\/]))|(\[\/' . $item_name .'])/';
-	$reply=preg_match($pattern, $this->str, $match,PREG_OFFSET_CAPTURE);
-	if(!$reply){
-		echo '<br>Remaining String.' . $this->str;
-		echo '<br>Was expecting to find a closing ' . $item_name . ' .Not Found';
-		die();
+	
+	
+	private function remove_named_node($item_name){
+		$flag=1;		
+	
+		while ($flag>0) {
+			$match=$this->find_next_named_node($item_name);
+			if(!empty($match[1][0])){
+				//found a opening node
+				$flag=$flag + 1;
+				$next_char= strlen($match[1][0]) + $match[1][1];	
+				$this->str=substr($this->str,$next_char);
+			}
+			else{
+				//close was found
+				$flag=$flag - 1;
+				$next_char= strlen($match[2][0]) + $match[2][1];	
+				$this->str=substr($this->str,$next_char);
+				if($flag==0)return;//found matching closing node
+			}
+		}
 	}
-	return $match;
-}
-
-
-
-}
-
+	
+	private function find_next_named_node($item_name){
+		$pattern = '/((?:\[' . $item_name .'\s.*?])|(?:\[' . $item_name .'])|(?:\[' . $item_name .'\/]))|(\[\/' . $item_name .'])/';
+		$reply=preg_match($pattern, $this->str, $match,PREG_OFFSET_CAPTURE);
+		if(!$reply){
+			echo '<br>Remaining String.' . $this->str;
+			echo '<br>Was expecting to find a closing ' . $item_name . ' .Not Found';
+			die();
+		}
+		return $match;
+	}
+	
+	
+	}
 
 function period_date($str){
 	if($str=="")return;

@@ -40,6 +40,7 @@ namespace aw2\wp_conn\module;
 \aw2_library::add_service('wp_conn.module.get','Get a Module',['namespace'=>__NAMESPACE__]);
 
 function get($atts,$content=null,$shortcode=null){
+	global $table_prefix;
 	if(\aw2_library::pre_actions('all',$atts,$content)==false)return;
 	
 	extract(\aw2_library::shortcode_atts( array(
@@ -47,18 +48,58 @@ function get($atts,$content=null,$shortcode=null){
 	'post_type'=>null,
 	'module'=>null,
 	), $atts) );
-	
+	if(\aw2_library::is_live_debug()){
+		
+		$live_debug_event=array();
+		$live_debug_event['flow']='connection';
+		$live_debug_event['action']='connection.called';
+		$live_debug_event['stream']='module_get';
+		$live_debug_event['hash']=$post_type . ':' . $module;
+		$live_debug_event['module']=$module;
+		$live_debug_event['connection']=$connection;
+		$live_debug_event['post_type']=$post_type;
+
+		$debug_format=array();
+		$debug_format['bgcolor']='#DEB6AB';
+
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'format'=>$debug_format]);
+	}
+
 	//check the location
 	$connection_arr=\aw2_library::$stack['code_connections'];
 	if(!isset($connection_arr[$connection])) 
 		throw new Exception($connection.' connection is not defined');
 	
 	$config = $connection_arr[$connection];
-
-	$hash='modules:' . $post_type . ':' . $module;
+	$use_env_cache=USE_ENV_CACHE;
+	$set_env_cache=SET_ENV_CACHE;
+	$readonly= isset($config['read_only'])?$config['read_only']:false;
+	 
+	if($readonly){
+		$use_env_cache=true;
+		$set_env_cache=true;
+	}
 	
+	$blog_id = 1;
+	if (function_exists('get_current_blog_id')) {
+		$blog_id = get_current_blog_id();
+	} 
+
+	$posts_table = $table_prefix . 'posts';
+
+
+	$hash='blog:'.$blog_id.':modules:' . $post_type . ':' . $module;
+	if(\aw2_library::is_live_debug()){
+		$live_debug_event['action']='connection.getting';
+		$live_debug_event['cache_key']=$hash;
+		$live_debug_event['use_env_cache']=$use_env_cache;
+		$live_debug_event['config']=$config;
+		$debug_format['bgcolor']='#DEB6AB';
+
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'format'=>$debug_format]);
+	}
 	$return_value='';
-	if(USE_ENV_CACHE){
+	if($use_env_cache){
 		$return_value=\aw2\global_cache\get(["main"=>$hash ,"db"=>$config['redis_db']],null,null);
 		$return_value=json_decode($return_value,true);
 	}
@@ -66,15 +107,25 @@ function get($atts,$content=null,$shortcode=null){
 	if(!$return_value){
 		$sql="select post_content,post_type,ID,post_name,post_title from wp_posts where post_type='" . $post_type . "' and post_name='" . $module . "'";
 		
+		$sql="select post_content,post_type,ID,post_name,post_title from ".$posts_table." where post_type='" . $post_type . "' and post_name='" . $module . "'";
+		
 		$results =\aw2\wp_conn\get_results($sql,$connection,$config);				
 
 		if(count($results)!==1)
 			$return_value=array();
 		else	
 			$return_value=\aw2\wp_conn\convert_to_module($results[0],$hash);
-			
-		if(SET_ENV_CACHE){
-			$ttl = isset($config['cache_expiry'])?$config['cache_expiry']:'300';
+		
+		if(\aw2_library::is_live_debug()){
+			$live_debug_event['action']='connection.cache.not_used';
+			$live_debug_event['cache_used']='no';
+			$live_debug_event['result']=$return_value;
+			$debug_format['bgcolor']='#DEB6AB';
+
+			\aw2\live_debug\publish_event(['event'=>$live_debug_event,'format'=>$debug_format]);
+		}	
+		if($set_env_cache){
+			$ttl = isset($config['cache_expiry'])?$config['cache_expiry']:'600';
 			\aw2\global_cache\set(["key"=>$hash,"db"=>$config['redis_db'],'ttl'=>$ttl],json_encode($return_value),null);
 		}			
 	}
@@ -95,6 +146,12 @@ function get($atts,$content=null,$shortcode=null){
 	}
 
 	$return_value=\aw2_library::post_actions('all',$return_value,$atts);
+	if(\aw2_library::is_live_debug()){
+		$live_debug_event['action']='connection.done';
+		$debug_format['bgcolor']='#DEB6AB';
+
+		\aw2\live_debug\publish_event(['event'=>$live_debug_event,'format'=>$debug_format]);
+	}
 	return $return_value;	
 }
 
@@ -116,22 +173,44 @@ function meta($atts,$content=null,$shortcode=null){
 		throw new Exception($connection.' connection is not defined');
 	
 	$config = $connection_arr[$connection];
+	$use_env_cache=USE_ENV_CACHE;
+	$set_env_cache=SET_ENV_CACHE;
+	$readonly= isset($config['read_only'])?$config['read_only']:false;
+	 
+	if($readonly){
+		$use_env_cache=true;
+		$set_env_cache=true;
+	}
 
-	$hash='modules_meta:' . $post_type . ':' . $module;
+	$blog_id = 1;
+	if (function_exists('get_current_blog_id')) {
+		$blog_id = get_current_blog_id();
+	} 
+
+	$hash='blog:'.$blog_id.':modules_meta:' . $post_type . ':' . $module;
 	
-	
-	if(USE_ENV_CACHE){
+	$metas=null;
+	if($use_env_cache){
 		$data=\aw2\global_cache\get(["main"=>$hash,"db"=>$config['redis_db']],null,null);
 		$metas=json_decode($data,true);
 	}
 	
 	if(!$metas){
+		$post_table= 'wp_posts';
+		$post_meta_table= 'wp_postmeta';
+		
+		if(IS_WP){
+			global $wpdb;	
+			$post_table = $wpdb->posts;
+			$post_meta_table = $wpdb->postmeta;
+		}
+	
 		$sql="
 		with q0 as(
-		   select ID from wp_posts where post_name='".$module."' and post_type='".$post_type."'
+		   select ID from ".$post_table." where post_name='".$module."' and post_type='".$post_type."'
 		),
 		q1 as (
-		   select post_id,meta_key,meta_value from wp_postmeta join q0 on post_id=q0.ID
+		   select post_id,meta_key,meta_value from ".$post_meta_table." join q0 on post_id=q0.ID
 		)
 		select *from q1;
 		";
@@ -142,7 +221,7 @@ function meta($atts,$content=null,$shortcode=null){
 			$metas[$result['meta_key']]=$result['meta_value'];
 		}
 		
-		if(SET_ENV_CACHE){
+		if($set_env_cache){
 			$ttl = isset($config['cache_expiry'])?$config['cache_expiry']:'300';
 			\aw2\global_cache\set(["key"=>$hash,"db"=>$config['redis_db'],'ttl'=>$ttl],json_encode($metas),null);
 		}
@@ -166,10 +245,18 @@ function exists($atts,$content=null,$shortcode=null){
 
 	if(empty($connection)) 
 		throw new Exception('connection is not provided');;
-
+	//make module slug in lower case
+	$module=strtolower($module);
+	
 	$results=\aw2\wp_conn\collection\_list($atts);
 	$module_names = array_column($results, 'post_title', 'post_name');
-		
+	
+	//%e0%a4%86%e0%a4%82%e0%a4%a4%e0%a4%b0 is possible in case hindi is used in post slug. this is fix for it
+	// Decode the keys and create a new array
+	$decoded_keys = array_map('urldecode', array_keys($module_names));
+	$module_names = array_combine($decoded_keys, array_values($module_names));
+	unset($decoded_keys);
+	
 	if(isset($module_names[$module]))
 		$return_value= true;
 	else	
@@ -196,21 +283,42 @@ function get($atts,$content=null,$shortcode=null){
 		throw new Exception($connection.' connection is not defined');
 	
 	$config = $connection_arr[$connection];
-	
-	$hash='collection:' . $post_type;
+	$use_env_cache=USE_ENV_CACHE;
+	$set_env_cache=SET_ENV_CACHE;
+	$readonly= isset($config['read_only'])?$config['read_only']:false;
+	 
+	if($readonly){
+		$use_env_cache=true;
+		$set_env_cache=true;
+	}
+
+	$blog_id = 1;
+	if (function_exists('get_current_blog_id')) {
+		$blog_id = get_current_blog_id();
+	} 
+
+	$hash='blog:'.$blog_id.':collection:' . $post_type;
 	
 	$results='';
-	if(USE_ENV_CACHE){
+	if($use_env_cache){
 		$data=\aw2\global_cache\get(["main"=>$hash,"db"=>$config['redis_db']],null,null);
 		$results=json_decode($data,true);
 	}
 	
 	if(!$results){
-		$sql="select post_content,post_type,ID,post_name,post_title from wp_posts where post_status='publish' and post_type='" . $post_type . "'";
+		
+		$post_table= 'wp_posts';
+		if(IS_WP){
+			global $wpdb;	
+			$post_table = $wpdb->posts;
+			
+		}
+		
+		$sql="select post_content,post_type,ID,post_name,post_title from ".$post_table." where post_status='publish' and post_type='" . $post_type . "'";
 		$results =\aw2\wp_conn\get_results($sql,$connection,$config);				
 
-		if(SET_ENV_CACHE){
-			$ttl = isset($config['cache_expiry'])?$config['cache_expiry']:'300';
+		if($set_env_cache){
+			$ttl = isset($config['cache_expiry'])?$config['cache_expiry']:'600';
 			\aw2\global_cache\set(["key"=>$hash,"db"=>$config['redis_db'],'ttl'=>$ttl],json_encode($results),null);
 		}
 		
@@ -242,20 +350,41 @@ function _list($atts,$content=null,$shortcode=null){
 		throw new Exception($connection.' connection is not defined');
 	
 	$config = $connection_arr[$connection];
+	$use_env_cache=USE_ENV_CACHE;
+	$set_env_cache=SET_ENV_CACHE;
+	$readonly= isset($config['read_only'])?$config['read_only']:false;
+	 
+	if($readonly){
+		$use_env_cache=true;
+		$set_env_cache=true;
+	}	
 	
-	$hash='collection_list:' . $post_type;
+	$blog_id = 1;
+	if (function_exists('get_current_blog_id')) {
+		$blog_id = get_current_blog_id();
+	} 
+
+	$hash='blog:'.$blog_id.':collection_list:' . $post_type;
 	
-	if(USE_ENV_CACHE){
+	$results=null;
+	if($use_env_cache){
 		$data=\aw2\global_cache\get(["main"=>$hash,"db"=>$config['redis_db']],null,null);
 		$results=json_decode($data,true);
 	}
 	
 	if(!$results){
-		$sql="select post_type,ID,post_name,post_title from wp_posts where post_status='publish' and post_type='" . $post_type . "'";
+		$post_table= 'wp_posts';
+		if(IS_WP){
+			global $wpdb;	
+			$post_table = $wpdb->posts;
+			
+		}
+		
+		$sql="select post_type,ID,post_name,post_title from ".$post_table." where post_status='publish' and post_type='" . $post_type . "'";
 		$results =\aw2\wp_conn\get_results($sql,$connection,$config);				
 		
-		if(SET_ENV_CACHE){
-			$ttl = isset($config['cache_expiry'])?$config['cache_expiry']:'300';
+		if($set_env_cache){
+			$ttl = isset($config['cache_expiry'])?$config['cache_expiry']:'600';
 			\aw2\global_cache\set(["key"=>$hash,"db"=>$config['redis_db'],'ttl'=>$ttl],json_encode($results),null);
 		}
 	}
@@ -263,4 +392,3 @@ function _list($atts,$content=null,$shortcode=null){
 	$return_value=\aw2_library::post_actions('all',$return_value,$atts);
 	return $return_value;	
 }
-

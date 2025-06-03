@@ -47,6 +47,22 @@ class controllers{
 			$o->pieces=array('home');
 		
 		$controller = $o->pieces[0];	
+
+		if(\aw2_library::is_live_debug()){
+			$debug_format=array();
+			$debug_format['bgcolor']='#E7E0C9';
+			
+			$live_debug_event=array();
+			$live_debug_event['flow']='app';
+			$live_debug_event['stream']='app_routing';
+			$live_debug_event['action']='app.routing.start';
+			$live_debug_event['app']=$app;
+			$live_debug_event['pieces']=implode('.',$o->pieces);
+			$live_debug_event['route']=$controller;
+			\aw2\live_debug\publish_event(['event'=>$live_debug_event,'format'=>$debug_format]);
+		}	
+
+		
 		if($controller == "ajax"){
 			array_shift($o->pieces);
 			$controller = $o->pieces[0]; 
@@ -58,9 +74,30 @@ class controllers{
 			
 			$app['active']['controller'] = $controller;
 			$app['active']['collection'] = $app['collection']['modules'];
+
+
+			if(\aw2_library::is_live_debug()){
+				$live_debug_event['action']='app.route.found';
+				$live_debug_event['route']=$controller;
+				$debug_format['bgcolor']='#E7E0C9';
+				\aw2\live_debug\publish_event(['event'=>$live_debug_event,'format'=>$debug_format]);
+
+				\aw2_library::set('@live_debug.app_debug_event',$live_debug_event);
+				\aw2_library::set('@live_debug.app_debug_format',$debug_format);
+				
+			}	
 			
 			call_user_func(array('controllers', 'controller_'.$controller),$o, $query);
 		}
+
+		if(\aw2_library::is_live_debug()){
+			$live_debug_event['action']='app.route.guess';
+			$debug_format['bgcolor']='#E7E0C9';
+			\aw2\live_debug\publish_event(['event'=>$live_debug_event,'format'=>$debug_format]);
+			\aw2_library::set('@live_debug.app_debug_event',$live_debug_event);
+			\aw2_library::set('@live_debug.app_debug_format',$debug_format);
+			
+		}	
 		
 		if($ajax != true){
 			self::controller_pages($o, $query);
@@ -68,7 +105,15 @@ class controllers{
 			self::controller_taxonomy($o, $query);
 		}
 
+
 		self::controller_modules($o);
+
+		if(\aw2_library::is_live_debug()){
+			$live_debug_event['action']='app.route.not_found';
+			$live_debug_event['reason']='Going for 404';
+			$debug_format['bgcolor']='#E7E0C9';
+			\aw2\live_debug\publish_event(['event'=>$live_debug_event,'format'=>$debug_format]);
+		}	
 		
 		self:: controller_404($o);
 		
@@ -125,12 +170,13 @@ class controllers{
 		$app['active']['module'] = self::$module;
 		$app['active']['template'] = self::$template;
 		
-		$filename=$_REQUEST['filename'];
+		$filename=preg_replace('/\.\.\/+|\.\/+/', '', $_REQUEST['filename']); 
 		$file_extension=explode('.',$filename);
 		$extension=end($file_extension);
 		
 		$folder=aw2_library::get('realpath.app_folder');
-		$path=$folder . $filename;
+		$path=realpath($folder . $filename);
+		if($path === false ) exit;
 		
 		switch ($extension) {
 			case 'excel':
@@ -165,12 +211,13 @@ class controllers{
 		$app['active']['module'] = self::$module;
 		$app['active']['template'] = self::$template;
 		
-		$filename=$_REQUEST['filename'];
+		$filename=preg_replace('/\.\.\/+|\.\/+/', '', $_REQUEST['filename']); //$_REQUEST['filename'];
 		$file_extension=explode('.',$filename);
 		$extension=end($file_extension);
 		
 		$folder=aw2_library::get('realpath.app_folder');
-		$path=$folder . $filename;
+		$path=realpath($folder . $filename);
+		if($path === false ) exit;
 	
 		switch ($extension) {
 			case 'excel':
@@ -208,7 +255,8 @@ class controllers{
 		
 		$filename=self::$module;	
 		$folder=aw2_library::get('realpath.app_folder');
-		$path=$folder . $filename;
+		$path=realpath($folder . $filename);
+		if($path === false ) exit;
 
 		header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
 		header('Content-Disposition: attachment;filename="' . $filename.'"');
@@ -353,7 +401,7 @@ class controllers{
 		$csv_ticket=array_shift($o->pieces);
 		self::set_qs($o);
 		
-		$filename=$_REQUEST['filename'];
+		$filename=preg_replace('/\.\.\/+|\.\/+/', '', $_REQUEST['filename']); //$_REQUEST['filename'];
 		
 		header("Content-type: application/csv");
 		header('Content-Disposition: attachment;filename="' . $filename);
@@ -377,7 +425,7 @@ class controllers{
 		$csv_ticket=array_shift($o->pieces);
 		self::set_qs($o);
 		
-		$filename=$_REQUEST['filename'];
+		$filename=preg_replace('/\.\.\/+|\.\/+/', '', $_REQUEST['filename']); //$_REQUEST['filename'];
 		
 		header("Content-type: application/csv");
 		header('Content-Disposition: attachment;filename="' . $filename);
@@ -487,35 +535,75 @@ class controllers{
 	static function controller_pages($o, $query){
 		if(empty($o->pieces))return;
 
-		if(AWESOME_DEBUG) \aw2\debug\flow(['main'=>'Before running Page/Module']);			
- 
-	
-		$slug= $o->pieces[0];
+
+		if(\aw2_library::is_live_debug()){
+			$live_debug_event=\aw2_library::get('@live_debug.app_debug_event');
+			$debug_format=\aw2_library::get('@live_debug.app_debug_format');
+			
+			$debug_format['bgcolor']='#E7E0C9';
+			
+			$live_debug_event['action']='app.route.guess';
+			$live_debug_event['stream']='page';
+			\aw2\live_debug\publish_event(['event'=>$live_debug_event,'format'=>$debug_format]);
+		}	
 		
 		$app=&aw2_library::get_array_ref('app');
 		
-	if(isset($app['settings']['enable_cache'])){
-		self::set_cache_header($app['settings']['enable_cache']);
-	}
-	else	
-			self::set_cache_header('no'); // HTTP 1.1.
-	
-	self::set_index_header();
-	
+		if(isset($app['settings']['enable_cache'])){
+			self::set_cache_header($app['settings']['enable_cache']);
+		}
+		else	
+				self::set_cache_header('no'); // HTTP 1.1.
+		
+		self::set_index_header();
+		$slug= $o->pieces[0];
+		$final_page_slug = $slug;
 			
 		if(isset($app['collection']['pages'])){
+			if(count($o->pieces) > 1){
+
+				// Loop through pieces in reverse order
+				for ($i = count($o->pieces) - 1; $i >= 0; $i--) {
+					$currentPiece = $o->pieces[$i];
+					
+					// Check if module exists
+					if (aw2_library::module_exists_in_collection($app['collection']['pages'], $currentPiece)) {
+						// Build path string with existing pieces
+						$path = array_slice($o->pieces, 0, $i + 1);
+						$o->pieces = array_slice($o->pieces,$i + 1);
+						$slug = $currentPiece;	
+						$final_page_slug = implode("/", $path);
+					}
+				}
+
+			}				
 			if(aw2_library::module_exists_in_collection($app['collection']['pages'],$slug)){
-				array_shift($o->pieces);
 				self::set_qs($o);
 				$app['active']['collection'] = $app['collection']['pages'];
 				$app['active']['module'] = $slug;
 				$app['active']['controller'] = 'page';
+
+				if(\aw2_library::is_live_debug()){
+					$live_debug_event['action']='app.route.found';
+					$live_debug_event['stream']='page';
+					$live_debug_event['app']=\aw2_library::get('app');
+					$live_debug_event['qs']=\aw2_library::get('qs');
+					$debug_format['bgcolor']='#E7E0C9';
+					
+					\aw2\live_debug\publish_event(['event'=>$live_debug_event,'format'=>$debug_format]);
+				}	
 				
-				$output = self::run_layout($app, 'pages', $slug,$query);
+				$output = self::run_layout($app, 'pages', $final_page_slug,$query);
 			
 				if($output !== false){
 					echo $output; 
-					if(AWESOME_DEBUG) \aw2\debug\flow(['main'=>'After running Page']);			
+
+					if(\aw2_library::is_live_debug()){
+						$live_debug_event['action']='app.done';
+						$debug_format['bgcolor']='#E7E0C9';
+						\aw2\live_debug\publish_event(['event'=>$live_debug_event,'format'=>$debug_format]);
+					}	
+					
 					aw2_library::cleanup();
 					exit();
 				}
@@ -524,6 +612,13 @@ class controllers{
 				return;
 			}
 		}
+
+		if(\aw2_library::is_live_debug()){
+			$live_debug_event['action']='app.route.guess';
+			$live_debug_event['stream']='module';
+			$debug_format['bgcolor']='#E7E0C9';
+			\aw2\live_debug\publish_event(['event'=>$live_debug_event,'format'=>$debug_format]);
+		}	
 	
 		if(isset($app['collection']['modules'])){
 		
@@ -538,11 +633,25 @@ class controllers{
 				
 				//$timeConsumed = round(microtime(true) - $GLOBALS['curTime'],3)*1000; 
 				//echo '/*' .  '::before layout:' .$timeConsumed . '*/';
+
+				if(\aw2_library::is_live_debug()){
+					$live_debug_event['action']='app.route.found';
+					$live_debug_event['stream']='module';
+					$live_debug_event['app']=\aw2_library::get('app');
+					$live_debug_event['module']=$slug;
+					$live_debug_event['qs']=\aw2_library::get('qs');
+					$debug_format['bgcolor']='#E7E0C9';
+					\aw2\live_debug\publish_event(['event'=>$live_debug_event,'format'=>$debug_format]);
+				}	
 				
 				$output = self::run_layout($app, 'modules', $slug,$query);
 				if($output !== false){
 					echo $output;
-					if(AWESOME_DEBUG) \aw2\debug\flow(['main'=>'After running Module']);		
+
+					if(\aw2_library::is_live_debug()){
+						$live_debug_event['action']='app.done';
+						\aw2\live_debug\publish_event(['event'=>$live_debug_event,'format'=>$debug_format]);
+					}	
 
 				//$timeConsumed = round(microtime(true) - $GLOBALS['curTime'],3)*1000; 
 				//echo '/*' .  '::before exit:' .$timeConsumed . '*/';
@@ -560,6 +669,16 @@ class controllers{
 	}
 	
 	static function controller_modules($o){ 
+
+		if(\aw2_library::is_live_debug()){
+			$live_debug_event=\aw2_library::get('@live_debug.app_debug_event');
+			$debug_format=\aw2_library::get('@live_debug.app_debug_format');
+
+			$live_debug_event['action']='app.route.guess';
+			$live_debug_event['stream']='module';
+			\aw2\live_debug\publish_event(['event'=>$live_debug_event,'format'=>$debug_format]);
+		}	
+
 
 		if(empty($o->pieces))return;
 
@@ -581,6 +700,18 @@ class controllers{
 			$app['active']['module'] = self::$module;
 			$app['active']['template'] = self::$template;
 
+
+			if(\aw2_library::is_live_debug()){
+				$live_debug_event['action']='app.route.found';
+				$live_debug_event['stream']='module';
+				$live_debug_event['app']=\aw2_library::get('app');
+				$live_debug_event['module']=self::$module;
+				$live_debug_event['template']=self::$template;
+				
+				$live_debug_event['qs']=\aw2_library::get('qs');
+				\aw2\live_debug\publish_event(['event'=>$live_debug_event,'format'=>$debug_format]);
+			}	
+
 			//$timeConsumed = round(microtime(true) - $GLOBALS['curTime'],3)*1000; 
 			//echo '/*' .  '::before module:' .$timeConsumed . '*/';			
 			$result=aw2_library::module_run($app['active']['collection'],self::$module,self::$template);
@@ -588,8 +719,12 @@ class controllers{
 			//$timeConsumed = round(microtime(true) - $GLOBALS['curTime'],3)*1000; 
 			//echo '/*' .  '::after module:' .$timeConsumed . '*/';				
 			echo $result;
-			//render debug bar if needs to be rendered	
-			if(AWESOME_DEBUG) echo \aw2\debugbar\ajax_render([]);
+
+			if(\aw2_library::is_live_debug()){
+				$live_debug_event['action']='app.done';
+				\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#E7E0C9']);
+			}	
+
 			
 			aw2_library::cleanup();
 			exit();	
@@ -615,6 +750,17 @@ class controllers{
 		self::set_qs($o);
 		$app['active']['controller'] = 'ticket';
 		$app['active']['ticket'] = $ticket;
+
+		if(\aw2_library::is_live_debug()){
+			$live_debug_event=\aw2_library::get('@live_debug.app_debug_event');
+			$live_debug_format=\aw2_library::get('@live_debug.app_debug_format');
+
+			$live_debug_event['action']='app.route.found';
+			$live_debug_event['stream']='ticket';
+			$live_debug_event['ticket']=$ticket;
+			$live_debug_event['qs']=\aw2_library::get('qs');
+			\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#E7E0C9']);
+		}	
 		
 		if(isset($ticket_activity['service'])){
 			//$hash['main']=$ticket_activity['service'];
@@ -622,7 +768,10 @@ class controllers{
 			$result=\aw2\service\run($hash,null,[]);
 			echo $result;
 			//render debug bar if needs to be rendered	
-			if(AWESOME_DEBUG) echo \aw2\debugbar\ajax_render([]);		
+			if(\aw2_library::is_live_debug()){
+				$live_debug_event['action']='app.done';
+				\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#E7E0C9']);
+			}	
 			aw2_library::cleanup();
 			exit();	
 		}
@@ -654,8 +803,10 @@ class controllers{
 		//echo '/*' .  '::before exit:' .$timeConsumed . '*/';
 
 		echo $result;
-		//render debug bar if needs to be rendered	
-		if(AWESOME_DEBUG) echo \aw2\debugbar\ajax_render([]);
+		if(\aw2_library::is_live_debug()){
+			$live_debug_event['action']='app.done';
+			\aw2\live_debug\publish_event(['event'=>$live_debug_event,'bgcolor'=>'#E7E0C9']);
+		}	
 		
 		aw2_library::cleanup();		
 		exit();	
@@ -689,7 +840,6 @@ class controllers{
 		}
 		echo implode('',$result);
 		//render debug bar if needs to be rendered	
-		if(AWESOME_DEBUG) echo \aw2\debugbar\ajax_render([]);		
 		aw2_library::cleanup();
 		exit();	
 	}	
@@ -755,40 +905,41 @@ class controllers{
 		return;
 	}
 	
-	static function controller_taxonomy($o, $query){
-		if(empty($o->pieces))return;
-		
-		$app=&aw2_library::get_array_ref('app');
-
-		if(isset($app['settings']['enable_cache'])){
-			self::set_cache_header($app['settings']['enable_cache']);
-		}
-		else	
-				self::set_cache_header('no'); // HTTP 1.1.
-		
-		self::set_index_header();
-		
-		if(!isset($app['settings']['default_taxonomy'])) return;
-		
-		$slug= $o->pieces[0];
-		$taxonomy	= $app['settings']['default_taxonomy'];
-		
-		$post_type='';
-		if( isset($app['collection']['posts']))
-			$post_type	= $app['collection']['posts']['post_type'];
-		
+	static function controller_taxonomy($o, $query) {
+		if (empty($o->pieces)) return;
 	
-		if(empty($taxonomy) || !term_exists( $slug, $taxonomy )) return;
-			
-		array_shift($o->pieces);
+		$app = &aw2_library::get_array_ref('app');
+	
+		// Set cache and index headers
+		self::set_cache_header($app['settings']['enable_cache'] ?? 'no');
+		self::set_index_header();
+	
+		// Validate the default taxonomy setting
+		$taxonomy = $app['settings']['default_taxonomy'] ?? null;
+		if (!$taxonomy || !is_array($o->pieces)) return;
+	
+		// Filter valid terms and identify slug
+		$valid_terms = array_filter($o->pieces, fn($piece) => term_exists($piece, $taxonomy));
+		$first_non_term_index = count($valid_terms);
+	
+		// If valid terms found, set the slug as the last valid term
+		$slug = !empty($valid_terms) ? end($valid_terms) : null;
+		if (!$slug) return;
+	
+		// Update $o->pieces and query variables
+		$o->pieces = array_slice($o->pieces, $first_non_term_index);
 		self::set_qs($o);
-		//taxonomy archive will be handled by archive.php == archive-content-layout;		
-		$query->query_vars[$taxonomy]=$slug;
-		$query->query_vars['post_type']=$post_type;
-		unset($query->query_vars['attachment']);
-		unset($query->query_vars['name']);
-		unset($query->query_vars[$app['collection']['pages']['post_type']]);
-
+	
+		// Set taxonomy and post type in query variables
+		$query->query_vars[$taxonomy] = $slug;
+		$query->query_vars['post_type'] = $app['collection']['posts']['post_type'] ?? '';
+		
+		// Unset unnecessary query vars
+		unset(
+			$query->query_vars['attachment'],
+			$query->query_vars['name'],
+			$query->query_vars[$app['collection']['pages']['post_type'] ?? '']
+		);
 		return;
 	}
 	
@@ -942,12 +1093,13 @@ class controllers{
 	}
 	
 	static function module_parts(){
-		$t=strpos(self::$module,'.');
+		$module = (string)self::$module;
+		$t=strpos($module,'.');
 		if($t===false){
 			self::$template='';
 			return;	
 		}
-		$parts=explode ('.' , self::$module); 
+		$parts=explode ('.' , $module); 
 		
 		self::$module=$parts[0];
 		array_shift($parts);

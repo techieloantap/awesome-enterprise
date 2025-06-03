@@ -22,12 +22,134 @@ Above example is for Nginx server.
 
 ### Reporting a bug
 
-Checkout the [existing issues](https://github.com/WPoets/awesome-enterprise/issues) for solutions or upcoming fixes. 
+Check out the [existing issues](https://github.com/WPoets/awesome-enterprise/issues) for solutions or upcoming fixes. 
 
-If you don't find your issue already listed, do [create an issue](https://github.com/WPoets/awesome-enterprise/issues/new), please include as much detail as you can.
+If you don't find your issue already listed, do [create an issue](https://github.com/WPoets/awesome-enterprise/issues/new). Please include as much detail as you can.
 
 
-### Changelog  
+### Changelog 
+
+##### 3.5.7
+
+* Improved: Added support so that the awesome shortcodes can be used to write the script.
+* Improved: Added better logging for SQL queries
+* Improved: Using the latest version of less.php
+* Improved: In awesome controller for pages - added support to handle sub-pages in the apps.
+* Improved: Changed the implementation for taxonomy to support parent-child urls
+* Fixed: When you use Hindi for slug in WordPress, it saves the name in URL encoded format, and that check was failing
+* Fixed: In error log, decided to stop logging open_basedir error for minify.php as it is mostly css file url
+* Fixed: Undefined array key "auth"
+* Fixed: Undefined array key "extension"
+
+
+##### 3.5.6
+
+* Fixed: Undefined array key "post_type"
+* Fixed: Undefined array key "config"
+* Fixed: if LOG_PATH is not defined do nothing.
+
+##### 3.5.5
+
+* Improved: added debug code for folder connection
+* Fixed: switched to real path to ensure only correct files are allowed to be downloaded.
+* Fixed: removed depreciation notices to improve compatibility with PHP 8.2
+* Fixed: updated dependency of less.php to 4 to improve compatibility with PHP 8.2
+* Fixed: moved the require_once to ensure that they are only used in specific cases and not all scenarios.
+* Fixed: made changes so that error log becomes compatible with mysql 8.
+* Fixed: made session cache dynamic, instead of using default.
+* Fixed:  the notice of 'undefined variable css'
+
+
+##### 3.5.4
+
+* Improved: Added support for 'ROOT_APP' and if it is defined then in a Non-WordPress case also, we can add support for module based pages.
+
+##### 3.5.3.3
+
+* Fixed: dbconn was giving issues when using multi query
+* Fixed: changed mysqli.php file to use the dbconn service when functions are directly called.
+
+##### 3.5.3.2
+* Improved: added new constant TIMEZONE, that can be used to define the timezone for php execution.
+
+* Fixed: dbconn was not working whenever env variable was cached.
+* Fixed: loop was giving a warning when we were looping objects
+* Fixed: warning 'start_time' not defined
+ 
+##### 3.5.3.1
+* Fixed: dbconn had issues - 'set' was saving blank value.
+
+##### 3.5.3
+* Improved: added new shortcode _redis_db.get_ to ensure that we can read key from across any redis db specified in shortcode eg. `[redis_db.get redis_sample_key db='2' field='debug_code' /]`.
+* Improved: Added ability to pass code as content in _code.highlight_ shortcode.
+
+* Fixed: converted > & < etc to htmlentities to ensure that spa script tags don't get executed by mistake.
+
+##### 3.5.2
+* Improved: performance of apps being delivered from CDN, also added new key 'read_only'=>true, in connection to ensure remote code always stays cached.
+* Improved: introduced _service.modules.list_, _service.module.get_,  _app.collection.modules.list_ and _app.collection.module.get_
+* Improved: introduced MYSQLI_CONNECTION to set the default settings to use for mysqli.* database connection
+
+* Fixed: fixed the issue with settings, it was resetting
+* Fixed: if database had special character in name then it was giving sql error, fixed it.
+* Fixed: fixed issues in the collection.get for folder_conn
+* Fixed: fixed the situation so that incase error_log itself creates an issue, it does not disturb the flow.
+
+##### 3.5.1
+* Improved: added support for _arr.unshift_
+* Improved: introduced _loop.live_arr_ to enable looping an array that is changing at runtime
+* Improved: improved the way add_service function was working
+
+* Fixed: fixed the issue with template type aw2_arr, it was getting executed
+* Fixed: added unique keys for metas
+* Fixed: fixed the issue where missing modules were checked everytime it was accessed by url_connector
+
+##### 3.5
+* Improved: *arr.create* now supports two new attributes _path_ and _raw_content_ making it even easier to create arrays 
+* Improved: Introduced 2 new shortcodes to enable additional db connections as needed by the system *dbserver.connect* & *dbconn.register*. Also, mysqli shortcode now uses this new connection and keeps the WORDPRESS default connection and kept in primary_db
+* Improved: Added support for *o.arr_push* to push a new item to an existing array, it uses array_push php function
+* Improved: Introduced the support for *util.constant*. It returns an associative array with the names of all the constants and their values
+* Improved: Added support for template types while adding new templates. By adding *template_type='aw2_arr'* will allows us to define templates that return arrays. 
+* Improved: Added support for *_atts_arr* to *service.run* shortcode so that we can pass to services the attributes at a template level. 
+* Fixed: Removed notices in case obj_id or obj_type is not defined.
+* Fixed: Issue with converting a post_type to service.
+* Fixed: Issue with .esc_sql - it was using WordPress function, converted it to a awesome function.
+* Fixed: Issue: warning "failed to open stream" for external files.
+* Fixed: Issue while redirecting query strings were not respected.
+
+##### 3.4.4
+* Improved: Added support for redis hash keys in session cache using _'session_cache.del'_ and _'session_cache.hlen'_
+* Improved: Added support for m.sort for sorting arrays, it supports 'asort','arsort','krsort','ksort','rsort','sort','array_multisort'.
+* Improved: Added support for _template.anon.run_ so that we can have anonymous code behave like template.  
+* Fixed: Removed 404 header status in case ticket is not found.
+
+##### 3.4.3
+* Improved: Added support for redis hash keys in session cache using _'session_cache.hset'_ and _'session_cache.hget'_
+* Improved: Added t2 controller that allows to run services and better handling of expired tickets. 
+* Improved: removed a few warnings from session_tickets of PHP 8.1.
+
+##### 3.4.2
+* Improved: Errors can now be viewed directly after switching on debugging mode
+* Improved: SQL queries now carry more info for debugging when view in sql process list
+* Improved: Removed commented code.
+ 
+##### 3.4.1
+* Improved: Added support for `code.highlight` shortcode.
+
+##### 3.4
+* Improved: Added support for live debugging using "debugger app" all major activities now support the debugging data.
+* Improved: Compatibility with php 7.4 and 8.1.
+* Improved: Added `code.dump` to allow the ability to output the code shortcodes when needed.
+* Improved: Added `js.run_on_activity` to wrap javascript code to execute on user interaction with the browser.
+* Improved: Changed the way we can enable/disable or delete the code cache.   
+* Fixed: In the wp_conn the module name is converted to lowercase before finding it in post table. 
+* Fixed: Fixes in url connector.
+
+##### 3.3
+* Improved: Added support of checking for empty and Zero using not_blank and is_blank conditionals.
+* Fixed: Showing http 404 headers for missing ticket urls from earlier 200.
+* Improved: Added ability to check if a module exists within a collection using module_exists.
+* Fixed: made changes to reduce the notices when using PHP 8.1. 
 
 ##### 3.2.3.1
 * Fixed: In certain situations, error logging was resulting in multiple DB connections sometimes resulting in error 504.
